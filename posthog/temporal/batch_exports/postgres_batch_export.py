@@ -116,19 +116,19 @@ class PostgreSQLClient:
         self.port = port
         self.has_self_signed_cert = has_self_signed_cert
         self.connection_timeout = connection_timeout
-
-        self._connection: None | psycopg.AsyncConnection = None
+        self._connection = None  # type: None | psycopg.AsyncConnection
 
     @classmethod
     def from_inputs(cls, inputs: PostgresInsertInputs) -> typing.Self:
         """Initialize `PostgreSQLClient` from `PostgresInsertInputs`."""
+        # Use local vars for faster attribute access
         return cls(
-            user=inputs.user,
-            password=inputs.password,
-            database=inputs.database,
-            host=inputs.host,
-            port=inputs.port,
-            has_self_signed_cert=inputs.has_self_signed_cert,
+            inputs.user,
+            inputs.password,
+            inputs.host,
+            inputs.port,
+            inputs.database,
+            inputs.has_self_signed_cert,
         )
 
     @property
