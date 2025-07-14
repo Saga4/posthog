@@ -437,14 +437,22 @@ class PostgreSQLClient:
 
 def remove_invalid_json(data: bytes) -> bytes:
     """Remove invalid JSON from a byte string."""
-    # \u0000 cannot be present in PostgreSQL's jsonb type, and will cause an error.
-    # See: https://www.postgresql.org/docs/17/datatype-json.html
-    # We use a regex to avoid replacing escaped \u0000 (for example, \\u0000, which we have seen in
-    # some actual data)
-    data = NULL_UNICODE_PATTERN.sub(b"", data)
-    # Remove unpaired unicode surrogates
-    data = UNPAIRED_SURROGATE_PATTERN.sub(rb"\1", data)
-    data = UNPAIRED_SURROGATE_PATTERN_2.sub(rb"\1", data)
+    # Only scan/replace if markers are present
+    if b"\\u0000" in data:
+        data = NULL_UNICODE_PATTERN.sub(b"", data)
+
+    # Merge the two surrogate patterns into one and only scan once
+    if b"\\u" in data:
+        # Both UNPAIRED_SURROGATE_PATTERN and UNPAIRED_SURROGATE_PATTERN_2 are similar enough to combine.
+        pattern = re.compile(
+            rb"(\\u[dD][89A-Fa-f][0-9A-Fa-f]{2}\\u[dD][c-fC-F][0-9A-Fa-f]{2})"
+            rb"|"
+            rb"(\\u[dD][89A-Fa-f][0-9A-Fa-f]{2})"
+            rb"|"
+            rb"(\\u[dD][c-fC-F][0-9A-Fa-f]{2})"
+        )
+        data = pattern.sub(rb"\1", data)
+
     return data
 
 
