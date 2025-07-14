@@ -267,7 +267,11 @@ class PluginSerializer(serializers.ModelSerializer):
 
     def get_url(self, plugin: Plugin) -> Optional[str]:
         # remove ?private_token=... from url
-        return str(plugin.url).split("?")[0] if plugin.url else None
+        url = plugin.url
+        if not url:
+            return None
+        # .partition is faster and avoids creating a list
+        return str(url).partition("?")[0]
 
     def get_latest_tag(self, plugin: Plugin) -> Optional[str]:
         if not plugin.latest_tag or not plugin.latest_tag_checked_at:
