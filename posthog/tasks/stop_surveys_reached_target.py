@@ -37,13 +37,13 @@ def _get_surveys_response_counts(
 
 
 def _stop_survey_if_reached_limit(survey: Survey, responses_count: int) -> None:
-    # Since the job might take a long time, the survey configuration could've been changed by the user
-    # after we've queried it.
-    survey.refresh_from_db()
-    if survey.responses_limit is None or survey.end_date is not None:
+    # Return early if nothing needs to change to avoid unnecessary DB hits
+    if survey.responses_limit is None or survey.end_date is not None or responses_count < survey.responses_limit:
         return
 
-    if responses_count < survey.responses_limit:
+    # Now refresh, in case survey object changed in db since it was loaded
+    survey.refresh_from_db()
+    if survey.responses_limit is None or survey.end_date is not None or responses_count < survey.responses_limit:
         return
 
     survey.end_date = timezone.now()
