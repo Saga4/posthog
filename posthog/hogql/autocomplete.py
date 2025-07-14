@@ -677,28 +677,39 @@ def get_hogql_autocomplete(
 
 
 def extract_json_row(query_to_try, query_start, query_end):
-    query_row = ""
-    for row in query_to_try.split("\n"):
-        if query_start - len(row) <= 0:
-            query_row = row
-            break
-        query_start -= len(row) + 1
-        query_end -= len(row) + 1
-    query_to_try = query_row
+    # Find the line containing query_start without iteration
+    # Compute newline indices
+    total_len = len(query_to_try)
+    if query_start > total_len:
+        return "", 0, 0
 
-    count = query_to_try[:query_start].count('"')
+    # Find line boundaries (start and end index of the row containing query_start)
+    prev_newline = query_to_try.rfind("\n", 0, query_start)
+    next_newline = query_to_try.find("\n", query_start)
+    line_start = prev_newline + 1
+    if next_newline == -1:
+        line_end = total_len
+    else:
+        line_end = next_newline
+    query_row = query_to_try[line_start:line_end]
+
+    # Adjust query_start/query_end relative to this line
+    local_query_start = query_start - line_start
+    local_query_end = query_end - line_start
+
+    count = query_row[:local_query_start].count('"')
     if count % 2 == 0:  # not in a string
         return "", 0, 0
 
-    start_pos = query_to_try.rfind('"', 0, query_start)
-    end_pos = query_to_try.find('"', query_start)
+    start_pos = query_row.rfind('"', 0, local_query_start)
+    end_pos = query_row.find('"', local_query_start)
     if end_pos == -1:
-        query_to_try = query_to_try[(start_pos + 1) :]
+        substring = query_row[(start_pos + 1) :]
     else:
-        query_to_try = query_to_try[(start_pos + 1) : end_pos]
-    query_start -= start_pos + 1
-    query_end -= start_pos + 1
-    return query_to_try, query_start, query_end
+        substring = query_row[(start_pos + 1) : end_pos]
+    local_query_start -= start_pos + 1
+    local_query_end -= start_pos + 1
+    return substring, local_query_start, local_query_end
 
 
 def add_globals_to_suggestions(globalVars: dict, response: HogQLAutocompleteResponse):
