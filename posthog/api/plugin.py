@@ -224,13 +224,14 @@ class PluginsAccessLevelPermission(BasePermission):
         return view.organization.plugins_access_level >= min_level
 
     def has_object_permission(self, request, view, object) -> bool:
-        if request.method in SAFE_METHODS:
-            # We allow viewing the plugin if the organization has the required access level
-            return view.organization.plugins_access_level >= Organization.PluginsAccessLevel.CONFIG
-
-        if view.organization != object.organization:
+        org = view.organization  # cache
+        if org != object.organization:
             self.message = "This plugin installation is managed by another organization"
             return False
+
+        if request.method in SAFE_METHODS:
+            # We allow viewing the plugin if the organization has the required access level
+            return org.plugins_access_level >= Organization.PluginsAccessLevel.CONFIG
 
         return True
 
