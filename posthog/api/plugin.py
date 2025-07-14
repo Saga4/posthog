@@ -669,10 +669,8 @@ class PluginConfigSerializer(serializers.ModelSerializer):
             return None
 
     def get_delivery_rate_24h(self, plugin_config: PluginConfig):
-        if "delivery_rates_1d" in self.context:
-            return self.context["delivery_rates_1d"].get(plugin_config.pk, None)
-        else:
-            return None
+        # Use dict.get to simplify lookup and fallback to None
+        return self.context.get("delivery_rates_1d", {}).get(plugin_config.pk)
 
     def get_error(self, plugin_config: PluginConfig) -> None:
         # Reporting the single latest error is no longer supported: use app
