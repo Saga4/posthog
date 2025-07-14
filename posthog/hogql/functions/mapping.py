@@ -90,13 +90,19 @@ class HogQLFunctionMeta:
 
 
 def compare_types(arg_types: list[ConstantType], sig_arg_types: tuple[ConstantType, ...]):
+    # Fast path: argument count mismatch
     if len(arg_types) != len(sig_arg_types):
         return False
 
-    return all(
-        isinstance(sig_arg_type, UnknownType) or isinstance(arg_type, sig_arg_type.__class__)
-        for arg_type, sig_arg_type in zip(arg_types, sig_arg_types)
-    )
+    unknown_type_cls = UnknownType
+
+    # Short-circuit for exact type matches (if common case), otherwise fall back to per-arg check
+    for arg_type, sig_arg_type in zip(arg_types, sig_arg_types):
+        if type(sig_arg_type) is unknown_type_cls:
+            continue  # Accept any type for this argument
+        if type(arg_type) is not type(sig_arg_type):
+            return False
+    return True
 
 
 HOGQL_COMPARISON_MAPPING: dict[str, ast.CompareOperationOp] = {
