@@ -114,7 +114,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -125,11 +125,21 @@ class BytecodeCompiler(Visitor):
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
+        self.context = context or HogQLContext(team_id=None)
+
+        # --- OPTIMIZATION START ---
+        # Dict for O(1) upvalue lookup: (index, is_local) -> slot number
+        self._upvalue_map = {}
+        # Dict for O(1) local lookup: name -> (index, local)
+        self._locals_map = None
+        if self.enclosing and hasattr(self.enclosing, "_build_locals_map"):
+            self.enclosing._build_locals_map()
+        # --- OPTIMIZATION END ---
+
         # we're in a function definition
         if args is not None:
             for arg in args:
                 self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -209,22 +219,30 @@ class BytecodeCompiler(Visitor):
         ]
 
     def _add_upvalue(self, index: int, is_local: bool) -> int:
-        for i, upvalue in enumerate(self.upvalues):
-            if upvalue.index == index and upvalue.is_local == is_local:
-                return i
+        # Use dict for O(1) lookup and slot reuse
+        key = (index, is_local)
+        if key in self._upvalue_map:
+            return self._upvalue_map[key]
+        slot = len(self.upvalues)
         self.upvalues.append(UpValue(index, is_local))
-        return len(self.upvalues) - 1
+        self._upvalue_map[key] = slot
+        return slot
 
     def _resolve_upvalue(self, name: str) -> int:
         if not self.enclosing:
             return -1
 
-        for index, local in reversed(list(enumerate(self.enclosing.locals))):
-            if local.name == name:
-                local.is_captured = True
-                return self._add_upvalue(index, True)
+        # Use optimized lookup table if available on the enclosing compiler
+        enclosing = self.enclosing
+        if enclosing._locals_map is None:
+            enclosing._build_locals_map()
+        entry = enclosing._locals_map.get(name)
+        if entry is not None:
+            index, local = entry
+            local.is_captured = True
+            return self._add_upvalue(index, True)
 
-        upvalue = self.enclosing._resolve_upvalue(name)
+        upvalue = enclosing._resolve_upvalue(name)
         if upvalue != -1:
             return self._add_upvalue(upvalue, False)
 
@@ -948,6 +966,13 @@ class BytecodeCompiler(Visitor):
         finally:
             self.mode = prev_mode
         return response
+
+    def _build_locals_map(self):
+        # Build (or rebuild) a name->(index, local) map for the enclosing locals (if not already done)
+        if self._locals_map is None:
+            self._locals_map = {}
+            for idx, local in enumerate(self.locals):
+                self._locals_map[local.name] = (idx, local)
 
 
 def execute_hog(
