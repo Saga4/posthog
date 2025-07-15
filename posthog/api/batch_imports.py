@@ -48,11 +48,12 @@ class BatchImportSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data: dict) -> BatchImport:
-        validated_data["team_id"] = self.context["team_id"]
-        validated_data["created_by_id"] = self.context["request"].user.id
+        context = self.context
+        validated_data["team_id"] = context["team_id"]
+        request_user_id = context["request"].user.id
+        validated_data["created_by_id"] = request_user_id
 
-        if "import_config" in validated_data:
-            validated_data["import_config"] = validated_data.pop("import_config")
+        # Remove redundant assignment/pop for 'import_config'
         return BatchImport.objects.create(**validated_data)
 
     def get_created_by(self, obj):
