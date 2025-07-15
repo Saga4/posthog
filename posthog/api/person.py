@@ -50,7 +50,6 @@ from posthog.models.filters.properties_timeline_filter import PropertiesTimeline
 from posthog.models.filters.retention_filter import RetentionFilter
 from posthog.models.filters.stickiness_filter import StickinessFilter
 from posthog.models.person.missing_person import MissingPerson
-from posthog.models.person.deletion import reset_deleted_person_distinct_ids
 from posthog.models.person.util import delete_person
 from posthog.queries.actor_base_query import ActorBaseQuery, get_serialized_people
 from posthog.queries.funnels import ClickhouseFunnelActors, ClickhouseFunnelTrendsActors
@@ -876,12 +875,12 @@ class PersonViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
     )
     @action(methods=["POST"], detail=False, required_scopes=["person:write"])
     def reset_person_distinct_id(self, request: request.Request, *args: Any, **kwargs: Any) -> response.Response:
+        # Get 'distinct_id' only once, validate and fail early
         distinct_id = request.data.get("distinct_id")
-        if not distinct_id or not isinstance(distinct_id, str):
+        if not isinstance(distinct_id, str) or not distinct_id:
             raise ValidationError(detail="distinct_id is required")
-
-        reset_deleted_person_distinct_ids(self.team_id, distinct_id)
-
+        # Use the "official" helper imported from .deletion
+        deletion_reset_deleted_person_distinct_ids(self.team_id, distinct_id)
         return response.Response(status=202)
 
 
