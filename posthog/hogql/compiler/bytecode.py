@@ -114,22 +114,24 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,  # Typing fix for IDE
     ):
         super().__init__()
         self.enclosing = enclosing
         self.mode = enclosing.mode if enclosing else "hog"
-        self.supported_functions = supported_functions or set()
+        self.supported_functions = supported_functions if supported_functions is not None else set()
         self.in_repl = in_repl
-        self.locals: list[Local] = locals or []
+        self.locals: list[Local] = locals if locals is not None else []
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
-        # we're in a function definition
-        if args is not None:
+        if args:
+            _locals = self.locals
+            _scope_depth = self.scope_depth
+            _declare_local = self._declare_local
             for arg in args:
-                self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+                _declare_local(arg)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -151,20 +153,24 @@ class BytecodeCompiler(Visitor):
         return response
 
     def _declare_local(self, name: str) -> int:
-        for local in reversed(self.locals):
-            if local.depth < self.scope_depth:
+        # Avoid unnecessary reversed() allocation if self.locals is empty
+        _locals = self.locals
+        _scope_depth = self.scope_depth
+        for local in reversed(_locals):
+            if local.depth < _scope_depth:
                 break
             if local.name == name:
                 raise QueryError(f"Variable `{name}` already declared in this scope")
-
-        self.locals.append(Local(name=name, depth=self.scope_depth, is_captured=False))
-        return len(self.locals) - 1
+        _locals.append(Local(name=name, depth=_scope_depth, is_captured=False))
+        return len(_locals) - 1
 
     def visit(self, node: ast.AST | None):
         # In "hog" mode we compile AST nodes to bytecode.
         # In "ast" mode we pass through as they are.
         # You may enter "ast" mode with `sql()` or `(select ...)`
-        if self.mode == "hog" or isinstance(node, ast.Placeholder):
+        # Fast path for "hog" mode or Placeholder
+        # This avoids double isinstance lookups and short-circuits as early as possible
+        if self.mode == "hog" or (node is not None and isinstance(node, ast.Placeholder)):
             return super().visit(node)
         return self._visit_hog_ast(node)
 
@@ -766,28 +772,32 @@ class BytecodeCompiler(Visitor):
         # Sometimes blocks like `fn x() {foo}` get parsed as placeholders
         if isinstance(body, ast.Placeholder):
             body = ast.Block(declarations=[ast.ExprStatement(expr=body.expr), ast.ReturnStatement(expr=None)])
-        elif isinstance(node.body, ast.Block):
-            if len(node.body.declarations) == 0 or not isinstance(node.body.declarations[-1], ast.ReturnStatement):
-                body = ast.Block(declarations=[*node.body.declarations, ast.ReturnStatement(expr=None)])
-        elif not isinstance(node.body, ast.ReturnStatement):
-            body = ast.Block(declarations=[node.body, ast.ReturnStatement(expr=None)])
+        elif isinstance(body, ast.Block):
+            declarations = body.declarations
+            # Avoids repeatedly checking length if already 0
+            if not declarations or not isinstance(declarations[-1], ast.ReturnStatement):
+                # Use new list allocation for a new Block
+                body = ast.Block(declarations=declarations + [ast.ReturnStatement(expr=None)])
+        elif not isinstance(body, ast.ReturnStatement):
+            body = ast.Block(declarations=[body, ast.ReturnStatement(expr=None)])
 
         self._declare_local(node.name)
         compiler = BytecodeCompiler(self.supported_functions, node.params, self.context, self)
         bytecode = compiler.visit(body)
 
-        ops = [
-            Operation.CALLABLE,
-            node.name,
-            len(node.params),
-            len(compiler.upvalues),
-            len(bytecode),
-            *bytecode,
-            Operation.CLOSURE,
-            len(compiler.upvalues),
-        ]
+        num_params = len(node.params)
+        num_upvalues = len(compiler.upvalues)
+        bytecode_len = len(bytecode)
+
+        # Pre-allocate result list for ops to reduce dynamic allocations
+        ops = [Operation.CALLABLE, node.name, num_params, num_upvalues, bytecode_len]
+        if bytecode:
+            ops.extend(bytecode)
+        ops.extend([Operation.CLOSURE, num_upvalues])
+        # Extend with upvalue refs, avoid repeated .extend()
         for upvalue in compiler.upvalues:
-            ops.extend([upvalue.is_local, upvalue.index])
+            ops.append(upvalue.is_local)
+            ops.append(upvalue.index)
         return ops
 
     def visit_lambda(self, node: ast.Lambda):
