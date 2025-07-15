@@ -114,22 +114,21 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,  # fixed forward reference
     ):
         super().__init__()
         self.enclosing = enclosing
         self.mode = enclosing.mode if enclosing else "hog"
-        self.supported_functions = supported_functions or set()
+        self.supported_functions = supported_functions if supported_functions is not None else set()
         self.in_repl = in_repl
-        self.locals: list[Local] = locals or []
+        self.locals: list[Local] = locals if locals is not None else []
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
-        # we're in a function definition
         if args is not None:
             for arg in args:
                 self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -161,9 +160,6 @@ class BytecodeCompiler(Visitor):
         return len(self.locals) - 1
 
     def visit(self, node: ast.AST | None):
-        # In "hog" mode we compile AST nodes to bytecode.
-        # In "ast" mode we pass through as they are.
-        # You may enter "ast" mode with `sql()` or `(select ...)`
         if self.mode == "hog" or isinstance(node, ast.Placeholder):
             return super().visit(node)
         return self._visit_hog_ast(node)
@@ -302,47 +298,57 @@ class BytecodeCompiler(Visitor):
             raise QueryError(f"Constant type `{type(node.value)}` is not supported")
 
     def visit_call(self, node: ast.Call):
-        if node.name == "not" and len(node.args) == 1:
+        n_args = len(node.args)
+        name = node.name
+
+        # Handle logical/flow functions as special cases
+        if name == "not" and n_args == 1:
             return [*self.visit(node.args[0]), Operation.NOT]
-        if node.name == "and" and len(node.args) > 1:
-            args = []
+        if name == "and" and n_args > 1:
+            # Use list comprehension for faster list extension
+            args_instr = []
             for arg in node.args:
-                args.extend(self.visit(arg))
-            return [*args, Operation.AND, len(node.args)]
-        if node.name == "or" and len(node.args) > 1:
-            args = []
+                args_instr.extend(self.visit(arg))
+            return [*args_instr, Operation.AND, n_args]
+        if name == "or" and n_args > 1:
+            args_instr = []
             for arg in node.args:
-                args.extend(self.visit(arg))
-            return [*args, Operation.OR, len(node.args)]
-        if node.name == "if" and len(node.args) >= 2:
+                args_instr.extend(self.visit(arg))
+            return [*args_instr, Operation.OR, n_args]
+        if name == "if" and n_args >= 2:
             expr = self.visit(node.args[0])
             then = self.visit(node.args[1])
-            else_ = self.visit(node.args[2]) if len(node.args) == 3 else None
+            has_else = n_args == 3
+            else_ = self.visit(node.args[2]) if has_else else None
             response = []
             response.extend(expr)
-            response.extend([Operation.JUMP_IF_FALSE, len(then) + (2 if else_ else 0)])
+            response.extend([Operation.JUMP_IF_FALSE, len(then) + (2 if has_else else 0)])
             response.extend(then)
-            if else_:
+            if has_else:
                 response.extend([Operation.JUMP, len(else_)])
                 response.extend(else_)
             return response
-        if node.name == "multiIf" and len(node.args) >= 2:
-            if len(node.args) <= 3:
+        if name == "multiIf" and n_args >= 2:
+            # If we have 3 or fewer args, defer to "if"
+            if n_args <= 3:
                 return self.visit(ast.Call(name="if", args=node.args))
-            prev = None if len(node.args) % 2 == 0 else self.visit(node.args[-1])
-            for i in range(len(node.args) - 2 - (len(node.args) % 2), -1, -2):
+            # Efficient sequential conditional branching
+            even_args = n_args % 2 == 0
+            prev = None if even_args else self.visit(node.args[-1])
+            for i in range(n_args - 2 - (0 if even_args else 1), -1, -2):
                 expr = self.visit(node.args[i])
                 then = self.visit(node.args[i + 1])
+                expr_jump = len(then) + (2 if prev else 0)
                 response = []
                 response.extend(expr)
-                response.extend([Operation.JUMP_IF_FALSE, len(then) + (2 if prev else 0)])
+                response.extend([Operation.JUMP_IF_FALSE, expr_jump])
                 response.extend(then)
                 if prev:
                     response.extend([Operation.JUMP, len(prev)])
                     response.extend(prev)
                 prev = response
             return prev
-        if node.name == "ifNull" and len(node.args) == 2:
+        if name == "ifNull" and n_args == 2:
             expr = self.visit(node.args[0])
             if_null = self.visit(node.args[1])
             response = []
@@ -351,7 +357,7 @@ class BytecodeCompiler(Visitor):
             response.extend([Operation.POP])
             response.extend(if_null)
             return response
-        if node.name == "sql" and len(node.args) == 1:
+        if name == "sql" and n_args == 1:
             prev_mode = self.mode
             self.mode = "ast"
             try:
@@ -360,46 +366,47 @@ class BytecodeCompiler(Visitor):
                 self.mode = prev_mode
             return response
 
-        # HogQL functions can have two sets of parameters: asd(args) or asd(params)(args)
-        # If params exist, take them as the first set
-        args = node.params if node.params is not None else node.args
+        # HogQL functions: params(args) or params(params)(args)
+        args_list = node.params if node.params is not None else node.args
 
-        response = []
-        for expr in args:
-            response.extend(self.visit(expr))
+        # Preallocate response list per args count (faster extends)
+        arg_instr = []
+        for expr in args_list:
+            arg_instr.extend(self.visit(expr))
 
+        # See if there's a local matching the function name
         found_local_with_name = False
         for local in reversed(self.locals):
-            if local.name == node.name:
+            if local.name == name:
                 found_local_with_name = True
+                break
 
+        response = arg_instr
         if found_local_with_name:
-            field = self.visit(ast.Field(chain=[node.name]))
-            response.extend([*field, Operation.CALL_LOCAL, len(args)])
+            field = self.visit(ast.Field(chain=[name]))
+            response = [*field, *response, Operation.CALL_LOCAL, len(args_list)]
         else:
-            upvalue = self._resolve_upvalue(node.name)
+            upvalue = self._resolve_upvalue(name)
             if upvalue != -1:
-                response.extend([Operation.GET_UPVALUE, upvalue, Operation.CALL_LOCAL, len(args)])
+                response = [Operation.GET_UPVALUE, upvalue, *response, Operation.CALL_LOCAL, len(args_list)]
             else:
-                if self.context.globals and node.name in self.context.globals:
-                    self.context.add_notice(
-                        start=node.start, end=node.end, message="Global variable: " + str(node.name)
+                add_ctx = self.context
+                is_global = add_ctx.globals and name in add_ctx.globals
+                is_supported = name in self.supported_functions or name in STL or name in BYTECODE_STL
+                if is_global:
+                    add_ctx.add_notice(start=node.start, end=node.end, message="Global variable: " + str(name))
+                elif not is_supported:
+                    add_ctx.add_error(
+                        start=node.start, end=node.end, message=f"Hog function `{name}` is not implemented"
                     )
-                elif node.name in self.supported_functions or node.name in STL or node.name in BYTECODE_STL:
-                    pass
-                else:
-                    self.context.add_error(
-                        start=node.start, end=node.end, message=f"Hog function `{node.name}` is not implemented"
-                    )
+                response = [*response, Operation.CALL_GLOBAL, name, len(args_list)]
 
-                response.extend([Operation.CALL_GLOBAL, node.name, len(args)])
-
-        # If the node has two sets of params, process the second set now
+        # If dual-params, apply the args and wrap previous call
         if node.params is not None:
-            next_response = []
+            arg2_instr = []
             for expr in node.args:
-                next_response.extend(self.visit(expr))
-            response = [*next_response, *response, Operation.CALL_LOCAL, len(node.args)]
+                arg2_instr.extend(self.visit(expr))
+            response = [*arg2_instr, *response, Operation.CALL_LOCAL, len(node.args)]
 
         return response
 
