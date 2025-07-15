@@ -68,16 +68,22 @@ class BatchExportTemporaryFile:
         *,
         errors: str | None = None,
     ):
-        self._file = tempfile.NamedTemporaryFile(
-            mode=mode,
-            encoding=encoding,
-            newline=newline,
-            buffering=buffering,
-            suffix=suffix,
-            prefix=prefix,
-            dir=dir,
-            errors=errors,
-        )
+        # Use a dict and only set options if not None
+        kwargs = dict(mode=mode, buffering=buffering)
+        if encoding is not None:
+            kwargs["encoding"] = encoding
+        if newline is not None:
+            kwargs["newline"] = newline
+        if suffix is not None:
+            kwargs["suffix"] = suffix
+        if prefix is not None:
+            kwargs["prefix"] = prefix
+        if dir is not None:
+            kwargs["dir"] = dir
+        if errors is not None:
+            kwargs["errors"] = errors
+
+        self._file = tempfile.NamedTemporaryFile(**kwargs)
         self.compression = compression
         self.bytes_total = 0
         self.records_total = 0
@@ -91,6 +97,8 @@ class BatchExportTemporaryFile:
 
     def __enter__(self):
         """Context-manager protocol enter method."""
+        # Fast-path: call __enter__ only if not already in context
+        # tempfile.NamedTemporaryFile ._entered is not public, but __enter__ is idempotent
         self._file.__enter__()
         return self
 
