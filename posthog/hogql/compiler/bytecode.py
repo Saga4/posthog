@@ -18,6 +18,7 @@ from common.hogvm.python.operation import (
     HOGQL_BYTECODE_IDENTIFIER,
     HOGQL_BYTECODE_VERSION,
 )
+import functools
 
 if TYPE_CHECKING:
     from posthog.models import Team
@@ -114,7 +115,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -125,7 +126,6 @@ class BytecodeCompiler(Visitor):
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
-        # we're in a function definition
         if args is not None:
             for arg in args:
                 self._declare_local(arg)
@@ -859,23 +859,20 @@ class BytecodeCompiler(Visitor):
         return response
 
     def _visit_hog_ast(self, node: ast.AST | None):
+        # Hotpath optimized: build a single list, avoid redundant checks/lookups
         if node is None:
-            return [Operation.NULL]
-        response = []
-        # We consider any object with the element "__hx_ast" to be a HogQLX AST node
-        response.extend([Operation.STRING, "__hx_ast"])
-        response.extend([Operation.STRING, node.__class__.__name__])
+            return [_NULL_OP]
+        response = [_STRING_OP, _HX_AST, _STRING_OP, node.__class__.__name__]
         fields = 1
-        for field in dataclasses.fields(node):
-            if field.name in ["start", "end", "type"]:
-                continue
-            value = getattr(node, field.name)
-            if value is None:
-                continue
-            response.extend([Operation.STRING, field.name])
-            response.extend(self._visit_hogqlx_value(value))
-            fields += 1
-        response.append(Operation.DICT)
+        visit_hogqlx_value = self._visit_hogqlx_value  # Localize for speed
+        for f in _cached_fields(type(node)):
+            value = getattr(node, f.name)
+            if value is not None:
+                response.extend((_STRING_OP, f.name))
+                # Only call visit_hogqlx_value when needed
+                response.extend(visit_hogqlx_value(value))
+                fields += 1
+        response.append(_DICT_OP)
         response.append(fields)
         return response
 
@@ -970,3 +967,21 @@ def execute_hog(
         context=HogQLContext(team_id=team.id if team else None),
     ).bytecode
     return execute_bytecode(bytecode, globals=globals, functions=functions, timeout=timeout, team=team)
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_fields(cls):
+    # Returns ordered list of valid fields for a dataclass type
+    # (excluding start, end, type)
+    return [f for f in dataclasses.fields(cls) if f.name not in _IGNORED_FIELD_NAMES]
+
+
+_IGNORED_FIELD_NAMES = frozenset({"start", "end", "type"})
+
+_HX_AST = "__hx_ast"
+
+_STRING_OP = Operation.STRING
+
+_DICT_OP = Operation.DICT
+
+_NULL_OP = Operation.NULL
