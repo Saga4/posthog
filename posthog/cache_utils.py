@@ -57,7 +57,7 @@ class CachedFunction(Generic[P, R]):
 
 
 def cache_for(cache_time: timedelta, background_refresh=False) -> Callable[[Callable[P, R]], CachedFunction[P, R]]:
-    def wrapper(fn: Callable[P, R]) -> CachedFunction[P, R]:
+    def wrapper(fn):
         return CachedFunction(fn, cache_time, background_refresh)
 
     return wrapper
