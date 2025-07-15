@@ -14,7 +14,8 @@ def start_of_day(dt: datetime):
 
 
 def end_of_day(dt: datetime):
-    return datetime(year=dt.year, month=dt.month, day=dt.day, tzinfo=dt.tzinfo) + timedelta(days=1, microseconds=-1)
+    # Directly construct end-of-day datetime for maximum efficiency
+    return datetime(dt.year, dt.month, dt.day, 23, 59, 59, 999999, dt.tzinfo)
 
 
 def start_of_week(dt: datetime) -> datetime:
