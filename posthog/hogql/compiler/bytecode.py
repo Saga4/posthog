@@ -114,7 +114,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -126,9 +126,10 @@ class BytecodeCompiler(Visitor):
         self.scope_depth = 0
         self.args = args
         # we're in a function definition
-        if args is not None:
+        if args:
+            declare_local = self._declare_local
             for arg in args:
-                self._declare_local(arg)
+                declare_local(arg)
         self.context = context or HogQLContext(team_id=None)
 
     def _start_scope(self):
@@ -164,8 +165,21 @@ class BytecodeCompiler(Visitor):
         # In "hog" mode we compile AST nodes to bytecode.
         # In "ast" mode we pass through as they are.
         # You may enter "ast" mode with `sql()` or `(select ...)`
+        # Inline the logic from Visitor.visit() to avoid calling super()
         if self.mode == "hog" or isinstance(node, ast.Placeholder):
-            return super().visit(node)
+            if node is None:
+                return node  # type: ignore
+            try:
+                return node.accept(self)
+            except Exception as e:
+                # Avoid importing BaseHogQLError, catch-all as before, re-raise
+                if hasattr(e, "start") and hasattr(e, "end"):
+                    if getattr(e, "start", None) is None or getattr(e, "end", None) is None:
+                        if hasattr(node, "start"):
+                            e.start = node.start
+                        if hasattr(node, "end"):
+                            e.end = node.end
+                raise
         return self._visit_hog_ast(node)
 
     def visit_and(self, node: ast.And):
@@ -840,12 +854,17 @@ class BytecodeCompiler(Visitor):
         return response
 
     def visit_tuple(self, node: ast.Tuple):
-        response = []
-        for item in node.exprs:
-            response.extend(self.visit(item))
-        response.append(Operation.TUPLE)
-        response.append(len(node.exprs))
-        return response
+        # Use a list comprehension to gather all visit results, then flatten once at the end.
+        visit = self.visit  # local lookup
+        sublists = [visit(item) for item in node.exprs]
+        # Calculate total length and preallocate result array, then fill
+        # But for a small number of exprs, sum is fast enough.
+        result = []
+        for sub in sublists:
+            result.extend(sub)
+        result.append(Operation.TUPLE)
+        result.append(len(node.exprs))
+        return result
 
     def visit_hogqlx_tag(self, node: ast.HogQLXTag):
         response = []
