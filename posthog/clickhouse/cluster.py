@@ -26,13 +26,24 @@ from posthog import settings
 from posthog.clickhouse.client.connection import NodeRole, Workload, _make_ch_pool, default_client
 from posthog.settings import CLICKHOUSE_PER_TEAM_SETTINGS
 from posthog.settings.data_stores import CLICKHOUSE_CLUSTER
+from django.conf import settings
+
+# Caches for expensive or often-repeated computations
+_ON_CLUSTER_CLAUSE_CACHE: dict[bool, str] = {}
+_KAFKA_HOSTS_JOINED: str | None = None
+_KAFKA_ENGINE_CACHE: dict[tuple[str, str, str, str], str] = {}
+_KAFKA_LOG_ENTRIES_ENGINE: str | None = None
+_KAFKA_LOG_ENTRIES_TABLE_SQL: dict[bool, str] = {}
 
 
 logger = dagster.get_dagster_logger("clickhouse")
 
 
 def ON_CLUSTER_CLAUSE(on_cluster=True):
-    return f"ON CLUSTER '{CLICKHOUSE_CLUSTER}'" if on_cluster else ""
+    # Cache the ON_CLUSTER_CLAUSE for each possible on_cluster value
+    if on_cluster not in _ON_CLUSTER_CLAUSE_CACHE:
+        _ON_CLUSTER_CLAUSE_CACHE[on_cluster] = f"ON CLUSTER '{CLICKHOUSE_CLUSTER}'" if on_cluster else ""
+    return _ON_CLUSTER_CLAUSE_CACHE[on_cluster]
 
 
 K = TypeVar("K")
@@ -395,6 +406,14 @@ def get_cluster(
         cluster=cluster,
         retry_policy=retry_policy,
     )
+
+
+def _get_kafka_hosts_joined() -> str:
+    global _KAFKA_HOSTS_JOINED
+    if _KAFKA_HOSTS_JOINED is None:
+        # Join only once since KAFKA_HOSTS_FOR_CLICKHOUSE is immutable during process lifetime
+        _KAFKA_HOSTS_JOINED = ",".join(settings.KAFKA_HOSTS_FOR_CLICKHOUSE)
+    return _KAFKA_HOSTS_JOINED
 
 
 @dataclass

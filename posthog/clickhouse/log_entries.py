@@ -1,8 +1,18 @@
+from __future__ import annotations
 from posthog.clickhouse.kafka_engine import KAFKA_COLUMNS, kafka_engine, ttl_period
 from posthog.clickhouse.table_engines import ReplacingMergeTree
 from posthog.kafka_client.topics import KAFKA_LOG_ENTRIES
 from posthog.clickhouse.cluster import ON_CLUSTER_CLAUSE
 from posthog.settings import CLICKHOUSE_CLUSTER, CLICKHOUSE_DATABASE
+from django.conf import settings
+from posthog.settings.data_stores import CLICKHOUSE_CLUSTER
+
+# Caches for expensive or often-repeated computations
+_ON_CLUSTER_CLAUSE_CACHE: dict[bool, str] = {}
+_KAFKA_HOSTS_JOINED: str | None = None
+_KAFKA_ENGINE_CACHE: dict[tuple[str, str, str, str], str] = {}
+_KAFKA_LOG_ENTRIES_ENGINE: str | None = None
+_KAFKA_LOG_ENTRIES_TABLE_SQL: dict[bool, str] = {}
 
 LOG_ENTRIES_TABLE = "log_entries"
 LOG_ENTRIES_TTL_DAYS = 90
@@ -55,12 +65,27 @@ SETTINGS index_granularity=512
 
 
 def KAFKA_LOG_ENTRIES_TABLE_SQL(on_cluster=True):
-    return LOG_ENTRIES_TABLE_BASE_SQL.format(
-        table_name="kafka_" + LOG_ENTRIES_TABLE,
-        on_cluster_clause=ON_CLUSTER_CLAUSE(on_cluster),
-        engine=kafka_engine(topic=KAFKA_LOG_ENTRIES),
-        extra_fields="",
-    )
+    # In the common case, both the engine and SQL string are always the same for a given on_cluster
+    if on_cluster not in _KAFKA_LOG_ENTRIES_TABLE_SQL:
+        # Precompute these with the common parameters used in this codebase context
+        table_name = "kafka_" + LOG_ENTRIES_TABLE
+        engine = kafka_engine(topic=KAFKA_LOG_ENTRIES)
+        on_cluster_clause = ON_CLUSTER_CLAUSE(on_cluster)
+        _KAFKA_LOG_ENTRIES_TABLE_SQL[on_cluster] = LOG_ENTRIES_TABLE_BASE_SQL.format(
+            table_name=table_name,
+            on_cluster_clause=on_cluster_clause,
+            engine=engine,
+            extra_fields="",
+        )
+    return _KAFKA_LOG_ENTRIES_TABLE_SQL[on_cluster]
+
+
+def _get_kafka_hosts_joined() -> str:
+    global _KAFKA_HOSTS_JOINED
+    if _KAFKA_HOSTS_JOINED is None:
+        # Join only once since KAFKA_HOSTS_FOR_CLICKHOUSE is immutable during process lifetime
+        _KAFKA_HOSTS_JOINED = ",".join(settings.KAFKA_HOSTS_FOR_CLICKHOUSE)
+    return _KAFKA_HOSTS_JOINED
 
 
 LOG_ENTRIES_TABLE_MV_SQL = """
