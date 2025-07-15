@@ -85,6 +85,10 @@ class BatchExportTemporaryFile:
         self.records_since_last_reset = 0
         self._brotli_compressor = None
 
+        # Cache the mode check for binary as an instance attribute (avoids repeatedly parsing str)
+        self._binary_mode = "b" in mode
+        self.mode = mode
+
     def __getattr__(self, name):
         """Pass get attr to underlying tempfile.NamedTemporaryFile."""
         return self._file.__getattr__(name)
@@ -141,24 +145,49 @@ class BatchExportTemporaryFile:
 
     def write(self, content: bytes | str):
         """Write bytes to underlying file keeping track of how many bytes were written."""
-        compressed_content = self.compress(content)
-
-        if "b" in self.mode:
-            result = self._file.write(compressed_content)
+        # Cache attributes and methods in local vars
+        compress = self.compress
+        _file = self._file
+        _binary_mode = self._binary_mode
+        # Fast path: avoid compress overhead if no compression requested, pass directly to file
+        if self.compression is None:
+            data = content
+            # If binary mode required but given str, encode
+            if _binary_mode:
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                result = _file.write(data)
+            else:
+                # Text mode, must be str
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                result = _file.write(data)
         else:
-            result = self._file.write(compressed_content.decode("utf-8"))
-
-        self.bytes_total += result
-        self.bytes_since_last_reset += result
+            compressed_content = compress(content)
+            if _binary_mode:
+                result = _file.write(compressed_content)
+            else:
+                # Only decode if necessary, avoid decoding already-str
+                if isinstance(compressed_content, bytes):
+                    result = _file.write(compressed_content.decode("utf-8"))
+                else:
+                    result = _file.write(compressed_content)
+        # Inline the recording, using local vars for speed
+        bt = self.bytes_total
+        br = self.bytes_since_last_reset
+        bt += result
+        br += result
+        self.bytes_total = bt
+        self.bytes_since_last_reset = br
 
         return result
 
     def write_record_as_bytes(self, record: bytes):
+        """Write a record as bytes and update record counters."""
         result = self.write(record)
-
+        # Inline counter increments for best performance (no local vars; ints)
         self.records_total += 1
         self.records_since_last_reset += 1
-
         return result
 
     def write_records_to_jsonl(self, records):
