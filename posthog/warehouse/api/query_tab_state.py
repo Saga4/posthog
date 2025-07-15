@@ -31,7 +31,11 @@ class QueryTabStateViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
     serializer_class = QueryTabStateSerializer
 
     def safely_get_queryset(self, queryset):
-        return queryset.exclude(deleted=True)
+        # Use filter for marginal SQL efficiency, and short-circuit for models without 'deleted'
+        model = getattr(queryset, "model", None)
+        if model is not None and hasattr(model, "deleted"):
+            return queryset.filter(deleted=False)
+        return queryset
 
     @action(detail=False, methods=["get"])
     def user(self, request, *args, **kwargs):
