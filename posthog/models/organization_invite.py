@@ -155,9 +155,14 @@ class OrganizationInvite(UUIDModel):
 
     def is_expired(self) -> bool:
         """Check if invite is older than INVITE_DAYS_VALIDITY days."""
-        return self.created_at < timezone.now() - timedelta(INVITE_DAYS_VALIDITY)
+        # Optimization: Use pre-created timedelta.
+        expire_time = timezone.now() - _INVITE_EXPIRY_DELTA
+        return self.created_at < expire_time
 
     def __str__(self):
         return absolute_uri(f"/signup/{self.id}")
 
     __repr__ = sane_repr("organization", "target_email", "created_by")
+
+
+_INVITE_EXPIRY_DELTA = timedelta(INVITE_DAYS_VALIDITY)
