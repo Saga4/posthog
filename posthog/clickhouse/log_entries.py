@@ -1,8 +1,11 @@
+from __future__ import annotations
 from posthog.clickhouse.kafka_engine import KAFKA_COLUMNS, kafka_engine, ttl_period
 from posthog.clickhouse.table_engines import ReplacingMergeTree
 from posthog.kafka_client.topics import KAFKA_LOG_ENTRIES
 from posthog.clickhouse.cluster import ON_CLUSTER_CLAUSE
 from posthog.settings import CLICKHOUSE_CLUSTER, CLICKHOUSE_DATABASE
+from functools import lru_cache
+from posthog.settings.data_stores import CLICKHOUSE_CLUSTER
 
 LOG_ENTRIES_TABLE = "log_entries"
 LOG_ENTRIES_TTL_DAYS = 90
@@ -34,12 +37,14 @@ CREATE TABLE IF NOT EXISTS {table_name} {on_cluster_clause}
 """
 
 
+@lru_cache(maxsize=1)
 def LOG_ENTRIES_TABLE_ENGINE():
     return ReplacingMergeTree(LOG_ENTRIES_TABLE, ver="_timestamp")
 
 
+@lru_cache(maxsize=2)
 def LOG_ENTRIES_TABLE_SQL(on_cluster=True):
-    return (
+    sql = (
         LOG_ENTRIES_TABLE_BASE_SQL
         + """PARTITION BY toStartOfHour(timestamp) ORDER BY (team_id, log_source, log_source_id, instance_id, timestamp)
 {ttl_period}
@@ -52,6 +57,7 @@ SETTINGS index_granularity=512
         engine=LOG_ENTRIES_TABLE_ENGINE(),
         ttl_period=ttl_period("timestamp", LOG_ENTRIES_TTL_DAYS, unit="DAY"),
     )
+    return sql
 
 
 def KAFKA_LOG_ENTRIES_TABLE_SQL(on_cluster=True):

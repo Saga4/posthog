@@ -24,13 +24,16 @@ from clickhouse_pool import ChPool
 
 from posthog import settings
 from posthog.clickhouse.client.connection import NodeRole, Workload, _make_ch_pool, default_client
-from posthog.settings import CLICKHOUSE_PER_TEAM_SETTINGS
+from posthog.settings import CLICKHOUSE_CLUSTER, CLICKHOUSE_PER_TEAM_SETTINGS
 from posthog.settings.data_stores import CLICKHOUSE_CLUSTER
+from django.conf import settings
+from functools import lru_cache
 
 
 logger = dagster.get_dagster_logger("clickhouse")
 
 
+@lru_cache(maxsize=4)
 def ON_CLUSTER_CLAUSE(on_cluster=True):
     return f"ON CLUSTER '{CLICKHOUSE_CLUSTER}'" if on_cluster else ""
 
