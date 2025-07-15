@@ -114,7 +114,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -125,7 +125,8 @@ class BytecodeCompiler(Visitor):
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
-        # we're in a function definition
+        # For O(1) variable shadowing checks in the current scope
+        self._locals_name_map: dict[str, tuple[int, int]] = {}  # name: (index in self.locals, depth)
         if args is not None:
             for arg in args:
                 self._declare_local(arg)
@@ -151,14 +152,17 @@ class BytecodeCompiler(Visitor):
         return response
 
     def _declare_local(self, name: str) -> int:
-        for local in reversed(self.locals):
-            if local.depth < self.scope_depth:
-                break
-            if local.name == name:
+        # Fast path: is local with name declared in the current scope?
+        if name in self._locals_name_map:
+            idx, depth = self._locals_name_map[name]
+            if self.locals[idx].depth == self.scope_depth:
                 raise QueryError(f"Variable `{name}` already declared in this scope")
 
+        # Append the new local and update the mapping
         self.locals.append(Local(name=name, depth=self.scope_depth, is_captured=False))
-        return len(self.locals) - 1
+        idx = len(self.locals) - 1
+        self._locals_name_map[name] = (idx, self.scope_depth)
+        return idx
 
     def visit(self, node: ast.AST | None):
         # In "hog" mode we compile AST nodes to bytecode.
