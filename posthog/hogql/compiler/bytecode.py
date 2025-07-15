@@ -114,22 +114,23 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
         self.mode = enclosing.mode if enclosing else "hog"
-        self.supported_functions = supported_functions or set()
+        self.supported_functions = supported_functions if supported_functions is not None else set()
         self.in_repl = in_repl
-        self.locals: list[Local] = locals or []
+        self.locals: list[Local] = locals if locals is not None else []
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
         # we're in a function definition
         if args is not None:
+            _declare_local = self._declare_local  # Cache for loop
             for arg in args:
-                self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+                _declare_local(arg)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -863,37 +864,58 @@ class BytecodeCompiler(Visitor):
             return [Operation.NULL]
         response = []
         # We consider any object with the element "__hx_ast" to be a HogQLX AST node
-        response.extend([Operation.STRING, "__hx_ast"])
-        response.extend([Operation.STRING, node.__class__.__name__])
+        response += [Operation.STRING, "__hx_ast", Operation.STRING, node.__class__.__name__]
         fields = 1
-        for field in dataclasses.fields(node):
-            if field.name in ["start", "end", "type"]:
+        _fields = dataclasses.fields(node)
+        _getattr = getattr
+        for field in _fields:
+            fname = field.name
+            # skip fields not needed
+            if fname == "start" or fname == "end" or fname == "type":
                 continue
-            value = getattr(node, field.name)
+            value = _getattr(node, fname)
             if value is None:
                 continue
-            response.extend([Operation.STRING, field.name])
-            response.extend(self._visit_hogqlx_value(value))
+            response += [Operation.STRING, fname]
+            response += self._visit_hogqlx_value(value)
             fields += 1
         response.append(Operation.DICT)
         response.append(fields)
         return response
 
     def _visit_hogqlx_value(self, value: Any) -> list[Any]:
+        vtype = type(value)
+        if vtype is int:
+            return [Operation.INTEGER, value]
+        if vtype is float:
+            return [Operation.FLOAT, value]
+        if vtype is str:
+            return [Operation.STRING, value]
+        if value is True:
+            return [Operation.TRUE]
+        if value is False:
+            return [Operation.FALSE]
+        if value is None:
+            return [Operation.NULL]
+
         if isinstance(value, AST):
             return self.visit(value)
         if isinstance(value, list):
             elems = []
             for v in value:
                 elems.extend(self._visit_hogqlx_value(v))
-            return [*elems, Operation.ARRAY, len(value)]
+            elems.extend((Operation.ARRAY, len(value)))
+            return elems
         if isinstance(value, dict):
+            items = value.items()
             elems = []
-            for k, v in value.items():
+            for k, v in items:
                 elems.extend(self._visit_hogqlx_value(k))
                 elems.extend(self._visit_hogqlx_value(v))
-            return [*elems, Operation.DICT, len(value.items())]
+            elems.extend((Operation.DICT, len(value)))
+            return elems
         if isinstance(value, ast.AST):
+            # Check for Placeholder first to avoid unnecessary work
             if isinstance(value, ast.Placeholder):
                 if self.mode == "hog":
                     raise QueryError("Placeholders are not allowed in this context")
@@ -907,16 +929,6 @@ class BytecodeCompiler(Visitor):
             return self._visit_hog_ast(value)
         if isinstance(value, StrEnum):
             return [Operation.STRING, value.value]
-        if isinstance(value, int):
-            return [Operation.INTEGER, value]
-        if isinstance(value, float):
-            return [Operation.FLOAT, value]
-        if isinstance(value, str):
-            return [Operation.STRING, value]
-        if value is True:
-            return [Operation.TRUE]
-        if value is False:
-            return [Operation.FALSE]
         return [Operation.NULL]
 
     def visit_placeholder(self, node: ast.Placeholder):
