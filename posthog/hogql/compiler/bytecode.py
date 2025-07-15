@@ -18,6 +18,7 @@ from common.hogvm.python.operation import (
     HOGQL_BYTECODE_IDENTIFIER,
     HOGQL_BYTECODE_VERSION,
 )
+from functools import lru_cache
 
 if TYPE_CHECKING:
     from posthog.models import Team
@@ -114,7 +115,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -861,22 +862,38 @@ class BytecodeCompiler(Visitor):
     def _visit_hog_ast(self, node: ast.AST | None):
         if node is None:
             return [Operation.NULL]
+
+        # Use local variables for list methods for speed
         response = []
-        # We consider any object with the element "__hx_ast" to be a HogQLX AST node
-        response.extend([Operation.STRING, "__hx_ast"])
-        response.extend([Operation.STRING, node.__class__.__name__])
-        fields = 1
-        for field in dataclasses.fields(node):
-            if field.name in ["start", "end", "type"]:
+        extend = response.extend
+        append = response.append
+
+        # Initial response
+        extend([Operation.STRING, "__hx_ast", Operation.STRING, node.__class__.__name__])
+        fields_count = 1
+        cls = type(node)
+        fields = _dataclass_fields(cls)
+
+        # Localize frequently used functions
+        skip = _SKIP_FIELD_NAMES
+
+        # Fast-path: pre-bind _visit_hogqlx_value for less attribute lookup
+        _visit_hogqlx_value = self._visit_hogqlx_value
+
+        for field in fields:
+            name = field.name
+            if name in skip:
                 continue
-            value = getattr(node, field.name)
+            value = getattr(node, name)
             if value is None:
                 continue
-            response.extend([Operation.STRING, field.name])
-            response.extend(self._visit_hogqlx_value(value))
-            fields += 1
-        response.append(Operation.DICT)
-        response.append(fields)
+            # Batch extend instead of multiple list extends
+            extend([Operation.STRING, name])
+            extend(_visit_hogqlx_value(value))
+            fields_count += 1
+
+        append(Operation.DICT)
+        append(fields_count)
         return response
 
     def _visit_hogqlx_value(self, value: Any) -> list[Any]:
@@ -970,3 +987,12 @@ def execute_hog(
         context=HogQLContext(team_id=team.id if team else None),
     ).bytecode
     return execute_bytecode(bytecode, globals=globals, functions=functions, timeout=timeout, team=team)
+
+
+# Cache dataclasses.fields results per class for performance
+@lru_cache(maxsize=128)
+def _dataclass_fields(cls):
+    return dataclasses.fields(cls)
+
+
+_SKIP_FIELD_NAMES = {"start", "end", "type"}
