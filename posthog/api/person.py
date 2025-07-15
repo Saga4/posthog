@@ -128,16 +128,22 @@ def get_person_name(team: Team, person: Person) -> str:
 def get_person_name_helper(
     person_pk: int, person_properties: dict[str, str], distinct_ids: list[str], team: Team
 ) -> str:
-    display_name = None
-    for property in team.person_display_name_properties or PERSON_DEFAULT_DISPLAY_NAME_PROPERTIES:
-        if person_properties and person_properties.get(property):
-            display_name = person_properties.get(property)
-            break
-    if display_name:
-        return display_name
-    if len(distinct_ids) > 0:
-        # Prefer non-UUID distinct IDs (presumably from user identification) over UUIDs
-        return sorted(distinct_ids, key=is_anonymous_id)[0]
+    # Look for display name property in priority order
+    properties_list = team.person_display_name_properties or PERSON_DEFAULT_DISPLAY_NAME_PROPERTIES
+    if person_properties:
+        for property in properties_list:
+            value = person_properties.get(property)
+            if value:
+                return value
+
+    if distinct_ids:
+        # Prefer the first non-anonymous distinct_id, otherwise return the first one
+        for distinct_id in distinct_ids:
+            if not is_anonymous_id(distinct_id):
+                return distinct_id
+        # If all are anonymous, return the first
+        return distinct_ids[0]
+
     return str(person_pk)
 
 
