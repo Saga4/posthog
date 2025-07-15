@@ -114,41 +114,52 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
         self.mode = enclosing.mode if enclosing else "hog"
-        self.supported_functions = supported_functions or set()
+        self.supported_functions = supported_functions if supported_functions is not None else set()
         self.in_repl = in_repl
-        self.locals: list[Local] = locals or []
+        self.locals: list[Local] = locals if locals is not None else []
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
         # we're in a function definition
         if args is not None:
+            # Speed: avoid repeated method/attribute lookups in hot path
+            _declare_local = self._declare_local
             for arg in args:
-                self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+                _declare_local(arg)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
 
     def _end_scope(self) -> list[Any]:
         self.scope_depth -= 1
+        # Fast path: short-circuit as early as possible
         if self.in_repl and self.scope_depth == 0:
             return []
 
-        response: list[Any] = []
-        for local in reversed(self.locals):
-            if local.depth <= self.scope_depth:
+        result = []
+        locals_list = self.locals
+        scope_depth = self.scope_depth
+        op_close_upvalue = Operation.CLOSE_UPVALUE
+        op_pop = Operation.POP
+        i = len(locals_list) - 1
+
+        while i >= 0:
+            local = locals_list[i]
+            if local.depth <= scope_depth:
                 break
-            self.locals.pop()
-            if local.is_captured:
-                response.append(Operation.CLOSE_UPVALUE)
+            popped = locals_list.pop()
+            if popped.is_captured:
+                result.append(op_close_upvalue)
             else:
-                response.append(Operation.POP)
-        return response
+                result.append(op_pop)
+            i -= 1
+        return result
 
     def _declare_local(self, name: str) -> int:
         for local in reversed(self.locals):
