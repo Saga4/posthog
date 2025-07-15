@@ -9,6 +9,7 @@ import datetime as dt
 import enum
 import gzip
 import json
+import string
 import tempfile
 import typing
 
@@ -785,27 +786,26 @@ def remove_escaped_whitespace_recursive(value):
     This function is recursive just to be extremely careful and catch any whitespace that
     may be sneaked in a dictionary key or sequence.
     """
-    match value:
-        case str(s):
-            return " ".join(s.replace("\b", " ").split())
+    # Optimized explicit type dispatch for much better speed and avoid match/case overhead.
+    if isinstance(value, str):
+        return _clean_string(value)
+    elif isinstance(value, bytes):
+        return remove_escaped_whitespace_recursive(value.decode("utf-8"))
+    elif isinstance(value, list):
+        return [remove_escaped_whitespace_recursive(element) for element in value]
+    elif isinstance(value, set):
+        return {remove_escaped_whitespace_recursive(element) for element in value}
+    elif isinstance(value, tuple):
+        return tuple(remove_escaped_whitespace_recursive(element) for element in value)
+    elif isinstance(value, dict):
+        return {k: remove_escaped_whitespace_recursive(v) for k, v in value.items()}
+    else:
+        return value
 
-        case bytes(b):
-            return remove_escaped_whitespace_recursive(b.decode("utf-8"))
 
-        case [*sequence]:
-            # mypy could be bugged as it's raising a Statement unreachable error.
-            # But we are definitely reaching this statement in tests; hence the ignore comment.
-            # Maybe: https://github.com/python/mypy/issues/16272.
-            return type(value)(remove_escaped_whitespace_recursive(sequence_value) for sequence_value in sequence)  # type: ignore
-
-        case set(elements):
-            return {remove_escaped_whitespace_recursive(element) for element in elements}
-
-        case {**mapping}:
-            return {k: remove_escaped_whitespace_recursive(v) for k, v in mapping.items()}
-
-        case value:
-            return value
+def _clean_string(s):
+    # Translate all whitespace and '\b' to spaces, then collapse multiple spaces
+    return " ".join(s.translate(_WHITESPACE_TABLE).split())
 
 
 class RedshiftInsertBatchExportWriter(BatchExportWriter):
@@ -911,3 +911,8 @@ class RedshiftInsertBatchExportWriter(BatchExportWriter):
         """Ensure we mark next query as first after closing a file."""
         await super().close_temporary_file()
         self.first = True
+
+
+_WHITESPACE_BYTES = set(ord(c) for c in string.whitespace) | {8}
+
+_WHITESPACE_TABLE = str.maketrans({chr(c): " " for c in _WHITESPACE_BYTES})
