@@ -1,7 +1,9 @@
 # Note for the vary: these engine definitions (and many table definitions) are not in sync with cloud!
+from __future__ import annotations
 from typing import Literal
 
 from django.conf import settings
+from functools import lru_cache
 
 STORAGE_POLICY = lambda: "SETTINGS storage_policy = 'hot_to_cold'" if settings.CLICKHOUSE_ENABLE_STORAGE_POLICY else ""
 
@@ -44,6 +46,7 @@ def kafka_engine(topic: str, kafka_host: str | None = None, group="group1", seri
     return KAFKA_ENGINE.format(topic=topic, kafka_host=kafka_host, group=group, serialization=serialization)
 
 
+@lru_cache(maxsize=8)
 def ttl_period(field: str = "created_at", amount: int = 3, unit: Literal["DAY", "WEEK"] = "WEEK") -> str:
     return "" if settings.TEST else f"TTL toDate({field}) + INTERVAL {amount} {unit}"
 
