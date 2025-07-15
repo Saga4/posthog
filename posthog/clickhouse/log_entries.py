@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS {table_name} {on_cluster_clause}
 
 
 def LOG_ENTRIES_TABLE_ENGINE():
-    return ReplacingMergeTree(LOG_ENTRIES_TABLE, ver="_timestamp")
+    return _LOG_ENTRIES_TABLE_ENGINE
 
 
 def LOG_ENTRIES_TABLE_SQL(on_cluster=True):
@@ -89,3 +89,5 @@ INSERT INTO log_entries SELECT %(team_id)s, %(log_source)s, %(log_source_id)s, %
 """
 
 TRUNCATE_LOG_ENTRIES_TABLE_SQL = f"TRUNCATE TABLE IF EXISTS {LOG_ENTRIES_TABLE} {ON_CLUSTER_CLAUSE()}"
+
+_LOG_ENTRIES_TABLE_ENGINE = ReplacingMergeTree(LOG_ENTRIES_TABLE, ver="_timestamp")
