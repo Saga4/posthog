@@ -114,22 +114,23 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
         self.mode = enclosing.mode if enclosing else "hog"
-        self.supported_functions = supported_functions or set()
+        self.supported_functions = supported_functions if supported_functions is not None else set()
         self.in_repl = in_repl
-        self.locals: list[Local] = locals or []
+        self.locals: list[Local] = locals if locals is not None else []
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
         # we're in a function definition
         if args is not None:
+            _declare_local = self._declare_local
             for arg in args:
-                self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+                _declare_local(arg)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -216,53 +217,75 @@ class BytecodeCompiler(Visitor):
         return len(self.upvalues) - 1
 
     def _resolve_upvalue(self, name: str) -> int:
-        if not self.enclosing:
+        enclosing = self.enclosing
+        if not enclosing:
             return -1
 
-        for index, local in reversed(list(enumerate(self.enclosing.locals))):
+        enclosing_locals = enclosing.locals
+        for idx in range(len(enclosing_locals) - 1, -1, -1):
+            local = enclosing_locals[idx]
             if local.name == name:
                 local.is_captured = True
-                return self._add_upvalue(index, True)
+                return self._add_upvalue(idx, True)
 
-        upvalue = self.enclosing._resolve_upvalue(name)
+        upvalue = enclosing._resolve_upvalue(name)
         if upvalue != -1:
             return self._add_upvalue(upvalue, False)
 
         return -1
 
     def visit_field(self, node: ast.Field):
-        ops: list[str | int] = []
-        for index, local in reversed(list(enumerate(self.locals))):
-            if local.name == node.chain[0]:
-                ops = [Operation.GET_LOCAL, index]
-                break
+        # Fast attribute lookups
+        locals_list = self.locals
+        Operation_GET_LOCAL = Operation.GET_LOCAL
+        Operation_GET_UPVALUE = Operation.GET_UPVALUE
+        Operation_INTEGER = Operation.INTEGER
+        Operation_STRING = Operation.STRING
+        Operation_GET_PROPERTY = Operation.GET_PROPERTY
+        Operation_GET_GLOBAL = Operation.GET_GLOBAL
 
-        if len(ops) == 0:
-            arg = self._resolve_upvalue(str(node.chain[0]))
-            if arg != -1:
-                ops = [Operation.GET_UPVALUE, arg]
+        node_chain = node.chain
+        chain0 = node_chain[0]
+        n_chain = len(node_chain)
 
-        if len(ops) > 0:
-            if len(node.chain) > 1:
-                for element in node.chain[1:]:
-                    if isinstance(element, int):
-                        ops.extend([Operation.INTEGER, element, Operation.GET_PROPERTY])
+        # Local lookup, scanned in reverse for speed/priority
+        for idx in range(len(locals_list) - 1, -1, -1):
+            if locals_list[idx].name == chain0:
+                # Found a local
+                ops = [Operation_GET_LOCAL, idx]
+                if n_chain > 1:
+                    # Inline the property lookup extension
+                    for el in node_chain[1:]:
+                        if type(el) is int:
+                            ops.extend([Operation_INTEGER, el, Operation_GET_PROPERTY])
+                        else:
+                            ops.extend([Operation_STRING, str(el), Operation_GET_PROPERTY])
+                return ops
+
+        # Check upvalue
+        arg = self._resolve_upvalue(str(chain0))
+        if arg != -1:
+            ops = [Operation_GET_UPVALUE, arg]
+            if n_chain > 1:
+                for el in node_chain[1:]:
+                    if type(el) is int:
+                        ops.extend([Operation_INTEGER, el, Operation_GET_PROPERTY])
                     else:
-                        ops.extend([Operation.STRING, str(element), Operation.GET_PROPERTY])
+                        ops.extend([Operation_STRING, str(el), Operation_GET_PROPERTY])
             return ops
 
-        # Did not find a local nor an upvalue, must be a global.
-
-        chain = []
-        for element in reversed(node.chain):
-            chain.extend([Operation.STRING, element])
-        if self.context.globals and node.chain[0] in self.context.globals:
-            self.context.add_notice(start=node.start, end=node.end, message="Global variable: " + str(node.chain[0]))
+        # Must be a global variable
+        # Construct the chain only if we don't know it's a local or upvalue
+        chain_ops = []
+        for el in reversed(node_chain):
+            chain_ops.extend([Operation_STRING, el])
+        context = self.context
+        context_globals = context.globals
+        if context_globals and chain0 in context_globals:
+            context.add_notice(start=node.start, end=node.end, message="Global variable: " + str(chain0))
         else:
-            self.context.add_warning(
-                start=node.start, end=node.end, message="Unknown global variable: " + str(node.chain[0])
-            )
-        return [*chain, Operation.GET_GLOBAL, len(node.chain)]
+            context.add_warning(start=node.start, end=node.end, message="Unknown global variable: " + str(chain0))
+        return [*chain_ops, Operation_GET_GLOBAL, n_chain]
 
     def visit_tuple_access(self, node: ast.TupleAccess):
         return [
