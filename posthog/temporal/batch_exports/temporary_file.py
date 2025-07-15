@@ -84,6 +84,8 @@ class BatchExportTemporaryFile:
         self.bytes_since_last_reset = 0
         self.records_since_last_reset = 0
         self._brotli_compressor = None
+        self.mode = mode
+        self._is_binary_mode = "b" in mode
 
     def __getattr__(self, name):
         """Pass get attr to underlying tempfile.NamedTemporaryFile."""
@@ -123,30 +125,44 @@ class BatchExportTemporaryFile:
         self._brotli_compressor = None
 
     def compress(self, content: bytes | str) -> bytes:
-        if isinstance(content, str):
-            encoded = content.encode("utf-8")
+        # Fast-path: content is bytes and no compression
+        compression = self.compression
+        if type(content) is bytes:
+            if compression is None:
+                return content
+            elif compression == "gzip":
+                return gzip.compress(content)
+            elif compression == "brotli":
+                self.brotli_compressor.process(content)
+                return self.brotli_compressor.flush()
+            else:
+                raise ValueError(f"Unsupported compression: '{compression}'")
         else:
-            encoded = content
-
-        match self.compression:
-            case "gzip":
+            # content is str; encode only once as needed
+            encoded = content.encode("utf-8")
+            if compression is None:
+                return encoded
+            elif compression == "gzip":
                 return gzip.compress(encoded)
-            case "brotli":
+            elif compression == "brotli":
                 self.brotli_compressor.process(encoded)
                 return self.brotli_compressor.flush()
-            case None:
-                return encoded
-            case _:
-                raise ValueError(f"Unsupported compression: '{self.compression}'")
+            else:
+                raise ValueError(f"Unsupported compression: '{compression}'")
 
     def write(self, content: bytes | str):
         """Write bytes to underlying file keeping track of how many bytes were written."""
         compressed_content = self.compress(content)
 
-        if "b" in self.mode:
+        if self._is_binary_mode:
             result = self._file.write(compressed_content)
         else:
-            result = self._file.write(compressed_content.decode("utf-8"))
+            # Convert bytes to str (always UTF-8)
+            if type(compressed_content) is bytes:
+                write_content = compressed_content.decode("utf-8")
+            else:
+                write_content = compressed_content
+            result = self._file.write(write_content)
 
         self.bytes_total += result
         self.bytes_since_last_reset += result
