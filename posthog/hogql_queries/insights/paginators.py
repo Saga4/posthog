@@ -57,13 +57,21 @@ class HogQLHasMorePaginator:
         return len(self.response.results) > self.limit
 
     def trim_results(self) -> list[Any]:
-        if not self.response or not self.response.results:
+        resp = self.response
+        if not resp:
             return []
 
-        if self.has_more():
-            return self.response.results[:-1]
+        res = resp.results
+        if not res:
+            return []
 
-        return self.response.results
+        res_len = len(res)
+        limit = self.limit
+
+        # Inline check instead of calling has_more() again, avoiding double attribute access and length calculation.
+        if res_len > limit:
+            return res[:-1]
+        return res
 
     def execute_hogql_query(
         self,
