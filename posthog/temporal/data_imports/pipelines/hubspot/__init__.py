@@ -112,20 +112,29 @@ def _get_properties_str(
         custom_props = [prop for prop in all_props if not prop.startswith("hs_")]
         props = props + [c for c in custom_props if c not in props]
 
-    props_str = ""
+    # Optimization: Build joined property list incrementally,
+    # using pre-URL-encoded lengths to track the limit.
+    included_props = []
+    total_encoded_length = 0
+    first = True
+
     for i, prop in enumerate(props):
-        len_url_encoded_props = len(urllib.parse.quote(prop if not props_str else f"{props_str},{prop}"))
-        if len_url_encoded_props > PROPERTY_LENGTH_LIMIT:
+        encoded_prop = urllib.parse.quote(prop)
+        added_len = len(encoded_prop)
+        if not first:
+            added_len += 1  # For comma
+        prospective_total = total_encoded_length + added_len
+        if prospective_total > PROPERTY_LENGTH_LIMIT:
             logger.warning(
                 "Your request to Hubspot is too long to process. "
                 f"Therefore, only the first {i} of {len(props)} custom properties will be requested."
             )
             break
-        if not props_str:
-            props_str = prop
-        else:
-            props_str = f"{props_str},{prop}"
+        included_props.append(prop)
+        total_encoded_length = prospective_total
+        first = False
 
+    props_str = ",".join(included_props)
     return props_str
 
 
