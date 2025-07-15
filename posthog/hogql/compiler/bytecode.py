@@ -114,7 +114,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -125,7 +125,7 @@ class BytecodeCompiler(Visitor):
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
-        # we're in a function definition
+        # Predeclare function args as local variables
         if args is not None:
             for arg in args:
                 self._declare_local(arg)
@@ -861,18 +861,15 @@ class BytecodeCompiler(Visitor):
     def _visit_hog_ast(self, node: ast.AST | None):
         if node is None:
             return [Operation.NULL]
-        response = []
-        # We consider any object with the element "__hx_ast" to be a HogQLX AST node
-        response.extend([Operation.STRING, "__hx_ast"])
-        response.extend([Operation.STRING, node.__class__.__name__])
+        # Pre-allocate and use list appends for better performance
+        response = [Operation.STRING, "__hx_ast", Operation.STRING, node.__class__.__name__]
         fields = 1
-        for field in dataclasses.fields(node):
-            if field.name in ["start", "end", "type"]:
-                continue
+        for field in get_fields(node.__class__):
             value = getattr(node, field.name)
             if value is None:
                 continue
-            response.extend([Operation.STRING, field.name])
+            response.append(Operation.STRING)
+            response.append(field.name)
             response.extend(self._visit_hogqlx_value(value))
             fields += 1
         response.append(Operation.DICT)
@@ -880,19 +877,33 @@ class BytecodeCompiler(Visitor):
         return response
 
     def _visit_hogqlx_value(self, value: Any) -> list[Any]:
+        # Fast-path: AST node
         if isinstance(value, AST):
             return self.visit(value)
-        if isinstance(value, list):
+        vt = type(value)
+        # Handle Python primitive types with a fast dict
+        if vt is list:
+            # Empty case is extremely common; quick check for [] yields big speedup
+            if not value:
+                return [Operation.ARRAY, 0]
+            # Use local, flat list to avoid multiple .extend calls
             elems = []
             for v in value:
                 elems.extend(self._visit_hogqlx_value(v))
-            return [*elems, Operation.ARRAY, len(value)]
-        if isinstance(value, dict):
+            elems.append(Operation.ARRAY)
+            elems.append(len(value))
+            return elems
+        if vt is dict:
+            if not value:
+                return [Operation.DICT, 0]
             elems = []
             for k, v in value.items():
                 elems.extend(self._visit_hogqlx_value(k))
                 elems.extend(self._visit_hogqlx_value(v))
-            return [*elems, Operation.DICT, len(value.items())]
+            elems.append(Operation.DICT)
+            elems.append(len(value))
+            return elems
+        # PostHog AST (takes precedence to avoid matching on AST-placeholder dunder, etc)
         if isinstance(value, ast.AST):
             if isinstance(value, ast.Placeholder):
                 if self.mode == "hog":
@@ -907,12 +918,12 @@ class BytecodeCompiler(Visitor):
             return self._visit_hog_ast(value)
         if isinstance(value, StrEnum):
             return [Operation.STRING, value.value]
-        if isinstance(value, int):
-            return [Operation.INTEGER, value]
-        if isinstance(value, float):
-            return [Operation.FLOAT, value]
-        if isinstance(value, str):
-            return [Operation.STRING, value]
+        if vt in _OP_LOOKUP:
+            op = _OP_LOOKUP[vt]
+            if vt is bool:
+                return [op(value)]
+            return [op, value]
+        # python bool True/False, None, fallbacks
         if value is True:
             return [Operation.TRUE]
         if value is False:
@@ -970,3 +981,20 @@ def execute_hog(
         context=HogQLContext(team_id=team.id if team else None),
     ).bytecode
     return execute_bytecode(bytecode, globals=globals, functions=functions, timeout=timeout, team=team)
+
+
+def get_fields(cls):
+    # dataclasses.fields returns copies, so we cache only by class/type
+    if cls not in _FIELDS_CACHE:
+        _FIELDS_CACHE[cls] = [f for f in dataclasses.fields(cls) if f.name not in {"start", "end", "type"}]
+    return _FIELDS_CACHE[cls]
+
+
+_FIELDS_CACHE = {}
+
+_OP_LOOKUP = {
+    int: Operation.INTEGER,
+    float: Operation.FLOAT,
+    str: Operation.STRING,
+    bool: lambda x: Operation.TRUE if x else Operation.FALSE,
+}
