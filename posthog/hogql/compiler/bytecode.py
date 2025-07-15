@@ -114,7 +114,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -122,6 +122,9 @@ class BytecodeCompiler(Visitor):
         self.supported_functions = supported_functions or set()
         self.in_repl = in_repl
         self.locals: list[Local] = locals or []
+        self._locals_map: dict[str, int] = (
+            {} if locals is None else {local.name: idx for idx, local in enumerate(self.locals)}
+        )
         self.upvalues: list[UpValue] = []
         self.scope_depth = 0
         self.args = args
@@ -151,13 +154,16 @@ class BytecodeCompiler(Visitor):
         return response
 
     def _declare_local(self, name: str) -> int:
-        for local in reversed(self.locals):
-            if local.depth < self.scope_depth:
-                break
-            if local.name == name:
+        """Fast local name declaration with quick duplicate detection."""
+        idx = self._locals_map.get(name)
+        if idx is not None:
+            # Check only if the found local is in the current or deeper scope
+            existing_local = self.locals[idx]
+            if existing_local.depth >= self.scope_depth:
                 raise QueryError(f"Variable `{name}` already declared in this scope")
-
-        self.locals.append(Local(name=name, depth=self.scope_depth, is_captured=False))
+        local = Local(name=name, depth=self.scope_depth, is_captured=False)
+        self.locals.append(local)
+        self._locals_map[name] = len(self.locals) - 1
         return len(self.locals) - 1
 
     def visit(self, node: ast.AST | None):
