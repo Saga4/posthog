@@ -11,12 +11,16 @@ def find_all_reads(explain: dict) -> list[dict]:
     Looks for a Plan/Subplan with "Indexes" element. ClickHouse' MergeTree engine uses "ReadFromMergeTree"
     plan Node Type to describe reading from a table and if defined with index it will contain "Indexes" field.
     """
+    # Use iterative DFS to avoid call stack overhead and faster list extension
     reads = []
-    plan = explain.get("Plan", explain)
-    if "Indexes" in plan:
-        reads.append(plan)
-    for subplan in plan.get("Plans", []):
-        reads += find_all_reads(subplan)
+    stack = [explain.get("Plan", explain)]
+    while stack:
+        node = stack.pop()
+        if "Indexes" in node:
+            reads.append(node)
+        plans = node.get("Plans")
+        if plans:
+            stack.extend(plans)
     return reads
 
 
@@ -45,58 +49,57 @@ def guestimate_index_use(plan_with_indexes: dict) -> ReadIndexUsage:
     """
     db_table = plan_with_indexes.get("Description", "")
     result = ReadIndexUsage(table=db_table, use=QueryIndexUsage.NO)
-    if "Indexes" not in plan_with_indexes:
+    indexes = plan_with_indexes.get("Indexes")
+    if not indexes:
         return result
 
-    indexes = plan_with_indexes.get("Indexes", [])
-
+    # Fast path for ".person_distinct_id_overrides"
     if db_table.endswith(".person_distinct_id_overrides"):
         if len(indexes) == 1:
             index = indexes[0]
-            if (
-                index.get("Condition", "") != "true"
-                and "team_id" in index.get("Keys", [])
-                and selected_less_granules(index)
-            ):
+            keys = index.get("Keys", [])
+            if index.get("Condition", "") != "true" and "team_id" in keys and selected_less_granules(index):
                 result.use = QueryIndexUsage.YES
-
         return result
-    elif db_table.endswith(".sharded_events"):
-        min_max = False
-        partition = False
-        primary_key = False
+
+    # Fast path for ".sharded_events"
+    if db_table.endswith(".sharded_events"):
+        min_max = partition = primary_key = False
         for index in indexes:
-            if index.get("Condition", "") == "true":  # if the condition for index was not set
+            if index.get("Condition", "") == "true":
                 continue
             index_type = index.get("Type", "")
             if index_type == "MinMax":
-                min_max = selected_less_granules(index)
+                min_max = min_max or selected_less_granules(index)
             elif index_type == "Partition":
-                partition = selected_less_granules(index)
+                partition = partition or selected_less_granules(index)
             elif index_type == "PrimaryKey":
-                primary_key = len(index.get("Keys", [])) > 0 and selected_less_granules(index)
+                keys = index.get("Keys", [])
+                primary_key = primary_key or (keys and selected_less_granules(index))
         if (min_max or partition) and primary_key:
             result.use = QueryIndexUsage.YES
-
         return result
 
+    # Generic fallback
     result.use = QueryIndexUsage.UNDECISIVE
-    has_min_max = False
-    min_max = False
-    has_partition = False
-    partition = False
-    primary_key = False
+    has_min_max = has_partition = False
+    min_max = partition = primary_key = False
     for index in indexes:
-        override_not_using = index.get("Condition", "") == "true"
+        cond = index.get("Condition", "")
+        override_not_using = cond == "true"
         index_type = index.get("Type", "")
         if index_type == "MinMax":
             has_min_max = True
-            min_max = not override_not_using and selected_less_granules(index)
+            if not override_not_using and selected_less_granules(index):
+                min_max = True
         elif index_type == "Partition":
             has_partition = True
-            partition = not override_not_using and selected_less_granules(index)
+            if not override_not_using and selected_less_granules(index):
+                partition = True
         elif index_type == "PrimaryKey":
-            primary_key = not override_not_using and len(index.get("Keys", [])) > 0 and selected_less_granules(index)
+            keys = index.get("Keys", [])
+            if not override_not_using and keys and selected_less_granules(index):
+                primary_key = True
     if primary_key:
         if (not has_min_max and not has_partition) or min_max or partition:
             result.use = QueryIndexUsage.YES
@@ -109,17 +112,19 @@ def guestimate_index_use(plan_with_indexes: dict) -> ReadIndexUsage:
 def extract_index_usage_from_plan(plan: str) -> QueryIndexUsage:
     try:
         explain = json.loads(plan)
-        all_indices_use = [guestimate_index_use(r) for r in find_all_reads(explain[0])]
-        if all(x.use == QueryIndexUsage.YES for x in all_indices_use):
+        reads = find_all_reads(explain[0])
+        if not reads:
+            return QueryIndexUsage.UNDECISIVE
+        all_indices_use = [guestimate_index_use(r) for r in reads]
+        uses = {x.use for x in all_indices_use}
+        if uses == {QueryIndexUsage.YES}:
             return QueryIndexUsage.YES
-        elif all(x.use == QueryIndexUsage.NO for x in all_indices_use):
+        elif uses == {QueryIndexUsage.NO}:
             return QueryIndexUsage.NO
-        elif any(x.use in (QueryIndexUsage.YES, QueryIndexUsage.PARTIAL) for x in all_indices_use):
+        elif QueryIndexUsage.YES in uses or QueryIndexUsage.PARTIAL in uses:
             return QueryIndexUsage.PARTIAL
-
     except json.decoder.JSONDecodeError:
         pass
-
     return QueryIndexUsage.UNDECISIVE
 
 
