@@ -10,7 +10,15 @@ def start_of_hour(dt: datetime) -> datetime:
 
 
 def start_of_day(dt: datetime):
-    return datetime(year=dt.year, month=dt.month, day=dt.day, tzinfo=dt.tzinfo)
+    year = dt.year
+    month = dt.month
+    day = dt.day
+    tz = dt.tzinfo
+    # Use positional arguments for better performance
+    if tz is None:
+        return datetime(year, month, day)
+    else:
+        return datetime(year, month, day, tzinfo=tz)
 
 
 def end_of_day(dt: datetime):
