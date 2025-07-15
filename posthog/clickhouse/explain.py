@@ -26,8 +26,10 @@ def selected_less_granules(index: dict, tiny_data_granules: int = 100) -> bool:
     Index is effective if the number of granules selected is smaller than before using an index. If the data is
     small enough, the index won't limit what we read.
     """
-    initial_granules = index.get("Initial Granules", 0)
-    return index.get("Selected Granules", 0) < initial_granules or initial_granules < tiny_data_granules
+    ig = index.get
+    initial_granules = ig("Initial Granules", 0)
+    selected_granules = ig("Selected Granules", 0)
+    return selected_granules < initial_granules or initial_granules < tiny_data_granules
 
 
 @dataclass
@@ -45,58 +47,73 @@ def guestimate_index_use(plan_with_indexes: dict) -> ReadIndexUsage:
     """
     db_table = plan_with_indexes.get("Description", "")
     result = ReadIndexUsage(table=db_table, use=QueryIndexUsage.NO)
-    if "Indexes" not in plan_with_indexes:
+    indexes = plan_with_indexes.get("Indexes")
+    if not indexes:
         return result
 
-    indexes = plan_with_indexes.get("Indexes", [])
-
+    # .person_distinct_id_overrides
     if db_table.endswith(".person_distinct_id_overrides"):
         if len(indexes) == 1:
-            index = indexes[0]
-            if (
-                index.get("Condition", "") != "true"
-                and "team_id" in index.get("Keys", [])
-                and selected_less_granules(index)
-            ):
-                result.use = QueryIndexUsage.YES
-
+            idx = indexes[0]
+            cond = idx.get("Condition", "")
+            if cond != "true":
+                keys = idx.get("Keys", [])
+                if "team_id" in keys and selected_less_granules(idx):
+                    result.use = QueryIndexUsage.YES
         return result
-    elif db_table.endswith(".sharded_events"):
+
+    # .sharded_events
+    if db_table.endswith(".sharded_events"):
         min_max = False
         partition = False
         primary_key = False
-        for index in indexes:
-            if index.get("Condition", "") == "true":  # if the condition for index was not set
+        for idx in indexes:
+            cond = idx.get("Condition", "")
+            if cond == "true":
                 continue
-            index_type = index.get("Type", "")
-            if index_type == "MinMax":
-                min_max = selected_less_granules(index)
-            elif index_type == "Partition":
-                partition = selected_less_granules(index)
-            elif index_type == "PrimaryKey":
-                primary_key = len(index.get("Keys", [])) > 0 and selected_less_granules(index)
+            idx_type = idx.get("Type", "")
+            if idx_type == "MinMax":
+                if not min_max:  # Don't call if already True
+                    min_max = selected_less_granules(idx)
+            elif idx_type == "Partition":
+                if not partition:
+                    partition = selected_less_granules(idx)
+            elif idx_type == "PrimaryKey":
+                if not primary_key:
+                    keys = idx.get("Keys", [])
+                    if keys and selected_less_granules(idx):
+                        primary_key = True
         if (min_max or partition) and primary_key:
             result.use = QueryIndexUsage.YES
-
         return result
 
+    # Generic case
     result.use = QueryIndexUsage.UNDECISIVE
     has_min_max = False
     min_max = False
     has_partition = False
     partition = False
     primary_key = False
-    for index in indexes:
-        override_not_using = index.get("Condition", "") == "true"
-        index_type = index.get("Type", "")
-        if index_type == "MinMax":
+
+    for idx in indexes:
+        cond = idx.get("Condition", "")
+        idx_type = idx.get("Type", "")
+        skip = cond == "true"
+        if idx_type == "MinMax":
             has_min_max = True
-            min_max = not override_not_using and selected_less_granules(index)
-        elif index_type == "Partition":
+            if not skip:
+                if not min_max:
+                    min_max = selected_less_granules(idx)
+        elif idx_type == "Partition":
             has_partition = True
-            partition = not override_not_using and selected_less_granules(index)
-        elif index_type == "PrimaryKey":
-            primary_key = not override_not_using and len(index.get("Keys", [])) > 0 and selected_less_granules(index)
+            if not skip and not partition:
+                partition = selected_less_granules(idx)
+        elif idx_type == "PrimaryKey":
+            if not skip and not primary_key:
+                keys = idx.get("Keys", [])
+                if keys and selected_less_granules(idx):
+                    primary_key = True
+
     if primary_key:
         if (not has_min_max and not has_partition) or min_max or partition:
             result.use = QueryIndexUsage.YES
