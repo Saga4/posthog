@@ -111,25 +111,31 @@ class BytecodeCompiler(Visitor):
         self,
         supported_functions: Optional[set[str]] = None,
         args: Optional[list[str]] = None,
-        context: Optional[HogQLContext] = None,
+        context: Optional["HogQLContext"] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
-        self.mode = enclosing.mode if enclosing else "hog"
-        self.supported_functions = supported_functions or set()
+        self.mode = enclosing.mode if enclosing is not None else "hog"
+
+        # Avoid allocating a new set if supported_functions is given
+        self.supported_functions = supported_functions if supported_functions is not None else set()
+
         self.in_repl = in_repl
-        self.locals: list[Local] = locals or []
+        self.locals: list[Local] = locals if locals is not None else []
         self.upvalues: list[UpValue] = []
+        self._seen_upvalues = set()  # Internal helper for fast checks
         self.scope_depth = 0
         self.args = args
-        # we're in a function definition
-        if args is not None:
+        # We're in a function definition; add args as locals efficiently
+        if args:
+            # Avoid extra function calls by looping directly
+            _declare_local = self._declare_local  # Localize for speed
             for arg in args:
-                self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+                _declare_local(arg)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -209,10 +215,14 @@ class BytecodeCompiler(Visitor):
         ]
 
     def _add_upvalue(self, index: int, is_local: bool) -> int:
-        for i, upvalue in enumerate(self.upvalues):
-            if upvalue.index == index and upvalue.is_local == is_local:
-                return i
+        # Use set for O(1) lookups, maintain order in upvalues list
+        key = (index, is_local)
+        if key in self._seen_upvalues:
+            for i, upvalue in enumerate(self.upvalues):
+                if upvalue.index == index and upvalue.is_local == is_local:
+                    return i
         self.upvalues.append(UpValue(index, is_local))
+        self._seen_upvalues.add(key)
         return len(self.upvalues) - 1
 
     def _resolve_upvalue(self, name: str) -> int:
