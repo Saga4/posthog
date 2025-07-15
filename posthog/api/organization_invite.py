@@ -297,13 +297,12 @@ class OrganizationInviteViewSet(
 
     def dangerously_get_permissions(self):
         if self.action == "create":
-            create_permissions = [
-                permission()
-                for permission in [permissions.IsAuthenticated, OrganizationMemberPermissions, UserCanInvitePermission]
-            ]
-
-            return create_permissions
-
+            # Direct tuple return to avoid intermediate list creation
+            return (
+                permissions.IsAuthenticated(),
+                OrganizationMemberPermissions(),
+                UserCanInvitePermission(),
+            )
         raise NotImplementedError()
 
     def safely_get_queryset(self, queryset):
