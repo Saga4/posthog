@@ -20,6 +20,12 @@ class FirstTimeForUserAggregationQuery:
         self._context = context
         self._filters = filters
         self._event_or_action_filter = event_or_action_filter
+        self._cached_ratio_expr = None
+        self._cached_sampling_factor = getattr(self._context.query, "samplingFactor", None)
+
+        # If samplingFactor is not None, prebuild the RatioExpr for reuse
+        if self._cached_sampling_factor is not None:
+            self._cached_ratio_expr = ast.RatioExpr(left=ast.Constant(value=self._cached_sampling_factor))
 
     def to_query(self) -> ast.SelectQuery:
         query = ast.SelectQuery(
@@ -72,8 +78,7 @@ class FirstTimeForUserAggregationQuery:
         )
 
     def _ratio_expr(self) -> ast.RatioExpr | None:
-        query = self._context.query
-        if query.samplingFactor is None:
+        # Access the attribute only once and return cached result if possible
+        if self._cached_sampling_factor is None:
             return None
-        else:
-            return ast.RatioExpr(left=ast.Constant(value=query.samplingFactor))
+        return self._cached_ratio_expr
