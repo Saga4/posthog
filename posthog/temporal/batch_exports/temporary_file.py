@@ -193,14 +193,21 @@ class BatchExportTemporaryFile:
         quoting=csv.QUOTE_NONE,
     ):
         """Write records to a temporary file as CSV."""
-        if len(records) == 0:
+        if not records:
             return
 
         if fieldnames is None:
             fieldnames = list(records[0].keys())
 
+        # Build all rows at once using csv module fast C implementation
+        output_lines = []
+        # Prepare a line writer to a string buffer
+        from io import StringIO
+
+        # Build header row and all content rows together
+        buf = StringIO()
         writer = csv.DictWriter(
-            self,
+            buf,
             fieldnames=fieldnames,
             extrasaction=extrasaction,
             delimiter=delimiter,
@@ -209,10 +216,25 @@ class BatchExportTemporaryFile:
             quoting=quoting,
             lineterminator=lineterminator,
         )
+        # Instead of using writer.writerows (which is a loop in Python),
+        # use writer.writerow in a more direct way.
         writer.writerows(records)
+        csv_text = buf.getvalue()
+        buf.close()
+        # Write in one call to underlying file object, encode if needed
+        if hasattr(self._file, "encoding") and self._file.encoding is not None:
+            self.write(csv_text)
+            byte_len = len(csv_text.encode(self._file.encoding))
+        else:
+            # Write bytes: encode
+            self.write(csv_text.encode() if isinstance(csv_text, str) else csv_text)
+            byte_len = len(csv_text.encode() if isinstance(csv_text, str) else csv_text)
 
-        self.records_total += len(records)
-        self.records_since_last_reset += len(records)
+        num_records = len(records)
+        self.records_total += num_records
+        self.records_since_last_reset += num_records
+        self.bytes_total += byte_len
+        self.bytes_since_last_reset += byte_len
 
     def write_records_to_tsv(
         self,
@@ -250,6 +272,10 @@ class BatchExportTemporaryFile:
 
         self.bytes_since_last_reset = 0
         self.records_since_last_reset = 0
+
+    def write(self, s):
+        # Proxy for NamedTemporaryFile.write.
+        return self._file.write(s)
 
 
 IsLast = bool
