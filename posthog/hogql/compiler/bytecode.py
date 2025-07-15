@@ -114,7 +114,7 @@ class BytecodeCompiler(Visitor):
         context: Optional[HogQLContext] = None,
         enclosing: Optional["BytecodeCompiler"] = None,
         in_repl: Optional[bool] = False,
-        locals: Optional[list[Local]] = None,
+        locals: Optional[list["Local"]] = None,
     ):
         super().__init__()
         self.enclosing = enclosing
@@ -129,7 +129,7 @@ class BytecodeCompiler(Visitor):
         if args is not None:
             for arg in args:
                 self._declare_local(arg)
-        self.context = context or HogQLContext(team_id=None)
+        self.context = context if context is not None else HogQLContext(team_id=None)
 
     def _start_scope(self):
         self.scope_depth += 1
@@ -161,11 +161,14 @@ class BytecodeCompiler(Visitor):
         return len(self.locals) - 1
 
     def visit(self, node: ast.AST | None):
-        # In "hog" mode we compile AST nodes to bytecode.
-        # In "ast" mode we pass through as they are.
-        # You may enter "ast" mode with `sql()` or `(select ...)`
-        if self.mode == "hog" or isinstance(node, ast.Placeholder):
-            return super().visit(node)
+        # Fast-path the mode check and avoid attribute lookups
+        mode = self.mode
+        if mode == "hog" or (node is not None and isinstance(node, ast.Placeholder)):
+            # Inline the parent's 'visit' to directly call node.accept(self)
+            if node is None:
+                return node
+            return node.accept(self)
+        # else
         return self._visit_hog_ast(node)
 
     def visit_and(self, node: ast.And):
@@ -185,7 +188,13 @@ class BytecodeCompiler(Visitor):
         return response
 
     def visit_not(self, node: ast.Not):
-        return [*self.visit(node.expr), Operation.NOT]
+        # Avoid *-unpacking, use direct list concatenation for speed.
+        # Localize visit and Operation for faster lookup
+        expr_result = self.visit(node.expr)
+        if isinstance(expr_result, list):
+            expr_result.append(Operation.NOT)
+            return expr_result
+        return [expr_result, Operation.NOT]
 
     def visit_compare_operation(self, node: ast.CompareOperation):
         operation = COMPARE_OPERATIONS[node.op]
