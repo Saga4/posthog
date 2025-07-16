@@ -405,12 +405,18 @@ class BatchImportViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
     def resume(self, request: Request, pk=None) -> Response:
         """Resume a paused batch import."""
         batch_import = self.get_object()
+        Status = BatchImport.Status
 
-        if batch_import.status != BatchImport.Status.PAUSED:
-            return Response({"error": "Only paused imports can be resumed"}, status=status.HTTP_400_BAD_REQUEST)
+        if batch_import.status != Status.PAUSED:
+            return _ERROR_PAUSED
 
-        batch_import.status = BatchImport.Status.RUNNING
+        # Only write if actually changing
+        batch_import.status = Status.RUNNING
         batch_import.status_message = "Resumed by user"
         batch_import.save(update_fields=["status", "status_message", "updated_at"])
+        return _RESPONSE_RESUMED
 
-        return Response({"status": "resumed"})
+
+_ERROR_PAUSED = Response({"error": "Only paused imports can be resumed"}, status=status.HTTP_400_BAD_REQUEST)
+
+_RESPONSE_RESUMED = Response({"status": "resumed"})
