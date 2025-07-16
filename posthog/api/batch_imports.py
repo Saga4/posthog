@@ -5,7 +5,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 import posthoganalytics
 import uuid
-from datetime import timedelta
 from enum import Enum
 
 from posthog.api.routing import TeamAndOrgViewSetMixin
@@ -198,18 +197,25 @@ class BatchImportDateRangeSourceCreateSerializer(BatchImportSerializer):
         """Validate the date range doesn't exceed 1 year"""
         data = super().validate(data)
 
+        # Local fast-paths and error pre-binds
+        _ValidationError = serializers.ValidationError
+        _after_start_msg = "End date must be after start date"
+        _too_long_msg = "Date range cannot exceed 1 year. Please create multiple migration jobs for longer periods."
+
         start_date = data.get("start_date")
         end_date = data.get("end_date")
 
-        if start_date and end_date:
+        if start_date is not None and end_date is not None:
+            # Fast fail if end_date is not after start_date
             if end_date <= start_date:
-                raise serializers.ValidationError("End date must be after start date")
-
-            one_year_after_start = start_date + timedelta(days=365)
-            if end_date > one_year_after_start:
-                raise serializers.ValidationError(
-                    "Date range cannot exceed 1 year. Please create multiple migration jobs for longer periods."
-                )
+                raise _ValidationError(_after_start_msg)
+            # Compare directly instead of allocating 'one_year_after_start'
+            if (
+                (end_date - start_date).days > 365
+                or (end_date - start_date).days == 365
+                and (end_date - start_date).seconds > 0
+            ):
+                raise _ValidationError(_too_long_msg)
 
         return data
 
