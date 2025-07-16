@@ -131,7 +131,8 @@ def convert_team_digest_items_to_dict(items: list[CountedPlaylist] | QuerySet) -
 
 
 def count_non_zero_digest_items(report: PeriodicDigestReport) -> int:
-    return sum(1 for key in report.__dataclass_fields__ if len(getattr(report, key)) > 0)
+    # Directly sum fields with non-zero length, assuming all are containers
+    return sum(1 for v in report.__dict__.values() if len(v) > 0)
 
 
 def _get_all_digest_data_as_team_rows(period_start: datetime, period_end: datetime) -> dict[str, Any]:
