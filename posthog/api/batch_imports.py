@@ -12,6 +12,7 @@ from posthog.api.routing import TeamAndOrgViewSetMixin
 from posthog.api.shared import UserBasicSerializer
 from posthog.models.batch_imports import BatchImport, ContentType, DateRangeExportSource
 from posthog.models.user import User
+from functools import lru_cache
 
 
 class BatchImportKafkaTopic(str, Enum):
@@ -291,12 +292,17 @@ class BatchImportResponseSerializer(serializers.ModelSerializer):
 
     def get_created_by(self, obj):
         if obj.created_by_id:
-            try:
-                user = User.objects.get(id=obj.created_by_id)
+            user = self._get_user(obj.created_by_id)
+            if user is not None:
                 return UserBasicSerializer(user).data
-            except User.DoesNotExist:
-                return None
         return None
+
+    @lru_cache(maxsize=256)
+    def _get_user(self, user_id):
+        try:
+            return User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return None
 
 
 class BatchImportViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
