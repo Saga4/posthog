@@ -1,6 +1,5 @@
 import json
 import uuid
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.db import models
@@ -259,42 +258,46 @@ def update_response_sampling_limits(sender, instance, **kwargs):
         instance.response_sampling_daily_limits = None
         return
 
-    # Calculate the total number of days in the interval
-    if instance.response_sampling_interval_type == "day":
-        total_days = instance.response_sampling_interval
-    elif instance.response_sampling_interval_type == "week":
-        total_days = instance.response_sampling_interval * 7
-    elif instance.response_sampling_interval_type == "month":
-        total_days = instance.response_sampling_interval * 30  # Using average month length
+    interval_type = instance.response_sampling_interval_type
+    interval = instance.response_sampling_interval
+    limit = instance.response_sampling_limit
+    start_date = instance.response_sampling_start_date
+
+    # Fast mapping from interval_type to days multiplier
+    days_multiplier = {"day": 1, "week": 7, "month": 30}
+    total_days = interval * days_multiplier.get(interval_type, 1)
 
     # Calculate responses per day
-    responses_per_day = instance.response_sampling_limit // total_days
-    remaining_responses = instance.response_sampling_limit % total_days
+    responses_per_day = limit // total_days
+    remaining_responses = limit % total_days
 
     # Calculate the daily rollout percentage increment
     rollout_increment = 100 / total_days
 
-    # Generate the cumulative schedule
-    schedule = []
-    current_date = instance.response_sampling_start_date
-    rollout_percentage = rollout_increment  # Start at 100 / total_days
-    daily_response_limit = 0
-    for day in range(total_days):
-        daily_response_limit += responses_per_day + (1 if day < remaining_responses else 0)
-        schedule.append(
-            {
-                "date": current_date.isoformat(),
-                "daily_response_limit": daily_response_limit,
-                "rollout_percentage": round(rollout_percentage, 2),  # Round to 2 decimal places
-            }
-        )
-        current_date += timedelta(days=1)
-        rollout_percentage += rollout_increment
+    # Precompute all date strings (avoids calling timedelta and isoformat repeatedly)
+    start_ord = start_date.toordinal()
+    date_list = [start_date.__class__.fromordinal(start_ord + i).isoformat() for i in range(total_days)]
 
-    # Ensure the last day's rollout_percentage is exactly 100%
-    schedule[-1]["rollout_percentage"] = 100.0
+    # Fast allocation of response limits with optimized distribution
+    extra_ones = [1] * remaining_responses + [0] * (total_days - remaining_responses)
+    # Running total for daily response limit
+    daily_limits = []
+    running_sum = 0
+    for i in range(total_days):
+        running_sum += responses_per_day + extra_ones[i]
+        daily_limits.append(running_sum)
 
-    # Save the schedule in the instance (convert to JSON or store as needed)
+    # Precompute rollout_percentages (rounded as needed)
+    rollout_percentages = [round(rollout_increment * (i + 1), 2) for i in range(total_days)]
+    rollout_percentages[-1] = 100.0  # Last day should be exactly 100%
+
+    # Build the schedule using zip and list comprehension for efficiency
+    schedule = [
+        {"date": d, "daily_response_limit": l, "rollout_percentage": p}
+        for d, l, p in zip(date_list, daily_limits, rollout_percentages)
+    ]
+
+    # Store as JSON (still expensive step, but unavoidable)
     instance.response_sampling_daily_limits = json.dumps(schedule)
 
 
