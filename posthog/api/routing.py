@@ -31,6 +31,8 @@ from posthog.permissions import (
 )
 from posthog.rbac.user_access_control import UserAccessControl
 from posthog.user_permissions import UserPermissions
+from rest_framework import status
+from rest_framework.response import Response
 
 if TYPE_CHECKING:
     _GenericViewSet = GenericViewSet
@@ -449,3 +451,8 @@ class TeamAndOrgViewSetMixin(_GenericViewSet):  # TODO: Rename to include "Env" 
             pass
 
         return UserAccessControl(user=cast(User, self.request.user), team=team, organization_id=self.organization_id)
+
+
+_ERROR_PAUSED = Response({"error": "Only paused imports can be resumed"}, status=status.HTTP_400_BAD_REQUEST)
+
+_RESPONSE_RESUMED = Response({"status": "resumed"})
