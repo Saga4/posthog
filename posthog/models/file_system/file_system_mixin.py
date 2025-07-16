@@ -5,10 +5,10 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from posthog.exceptions_capture import capture_exception
 from typing import TYPE_CHECKING, Any, Optional
+from posthog.models.file_system.file_system_representation import FileSystemRepresentation
 
 if TYPE_CHECKING:
     from posthog.models.team import Team
-from posthog.models.file_system.file_system_representation import FileSystemRepresentation
 
 
 class FileSystemSyncMixin(Model):
@@ -24,7 +24,12 @@ class FileSystemSyncMixin(Model):
 
     def __init__(self, *args, _create_in_folder: Optional[str] = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self._create_in_folder = _create_in_folder
+        # Only allow None or str for _create_in_folder; this guarantees type for later logic
+        self._create_in_folder = (
+            _create_in_folder
+            if (isinstance(_create_in_folder, str) or _create_in_folder is None)
+            else str(_create_in_folder)
+        )
 
     @classmethod
     def get_file_system_unfiled(cls, team: "Team") -> QuerySet[Any]:

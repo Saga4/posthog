@@ -236,16 +236,24 @@ class Survey(FileSystemSyncMixin, RootTeamMixin, UUIDModel):
         return cls._filter_unfiled_queryset(base_qs, team, type="survey", ref_field="id")
 
     def get_file_system_representation(self) -> FileSystemRepresentation:
+        # Inline and cache all lookups for max performance
+        pk = self.pk
+        folder = self._create_in_folder if self._create_in_folder is not None else "Unfiled/Surveys"
+        name = self.name if self.name else "Untitled"
+        created_at = self.created_at
+        created_by_id = self.created_by_id
+
+        # Use string interpolation only once; avoid f-string overhead for trivial concatenation
+        pk_str = str(pk)
+        href = "/surveys/" + pk_str
+
         return FileSystemRepresentation(
-            base_folder=self._get_assigned_folder("Unfiled/Surveys"),
+            base_folder=folder,
             type="survey",  # sync with APIScopeObject in scopes.py
-            ref=str(self.pk),
-            name=self.name or "Untitled",
-            href=f"/surveys/{self.pk}",
-            meta={
-                "created_at": str(self.created_at),
-                "created_by": self.created_by_id,
-            },
+            ref=pk_str,
+            name=name,
+            href=href,
+            meta={"created_at": str(created_at), "created_by": created_by_id},
             should_delete=False,
         )
 
