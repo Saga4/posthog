@@ -116,25 +116,30 @@ class BatchImportS3SourceCreateSerializer(BatchImportSerializer):
 
     def create(self, validated_data: dict, **kwargs) -> BatchImport:
         """Create BatchImport using config builder pattern."""
+        # Prefetch context and validated_data values to locals to minimize dict lookup overhead
+        context = self.context
+        team_id = context["team_id"]
+        created_by_id = context["request"].user.id
+
+        content_type = _content_type_map[validated_data["content_type"]]
+        s3_bucket = validated_data["s3_bucket"]
+        s3_prefix = validated_data["s3_prefix"]
+        s3_region = validated_data["s3_region"]
+        access_key = validated_data["access_key"]
+        secret_key = validated_data["secret_key"]
+
         batch_import = BatchImport(
-            team_id=self.context["team_id"],
-            created_by_id=self.context["request"].user.id,
+            team_id=team_id,
+            created_by_id=created_by_id,
         )
 
-        content_type_map = {
-            "mixpanel": ContentType.MIXPANEL,
-            "amplitude": ContentType.AMPLITUDE,
-            "captured": ContentType.CAPTURED,
-        }
-
-        content_type = content_type_map[validated_data["content_type"]]
-
+        # Chained config builder pattern remains
         batch_import.config.json_lines(content_type).from_s3(
-            bucket=validated_data["s3_bucket"],
-            prefix=validated_data["s3_prefix"],
-            region=validated_data["s3_region"],
-            access_key_id=validated_data["access_key"],
-            secret_access_key=validated_data["secret_key"],
+            bucket=s3_bucket,
+            prefix=s3_prefix,
+            region=s3_region,
+            access_key_id=access_key,
+            secret_access_key=secret_key,
         ).to_kafka(
             topic=BatchImportKafkaTopic.HISTORICAL,
             send_rate=1000,
@@ -414,3 +419,10 @@ class BatchImportViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
         batch_import.save(update_fields=["status", "status_message", "updated_at"])
 
         return Response({"status": "resumed"})
+
+
+_content_type_map = {
+    "mixpanel": ContentType.MIXPANEL,
+    "amplitude": ContentType.AMPLITUDE,
+    "captured": ContentType.CAPTURED,
+}
