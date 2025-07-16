@@ -215,32 +215,51 @@ class BatchImportDateRangeSourceCreateSerializer(BatchImportSerializer):
 
     def create(self, validated_data: dict, **kwargs) -> BatchImport:
         """Create a new BatchImport from Date Range Source"""
-        validated_data["team_id"] = self.context["team_id"]
-        source_type = validated_data["source_type"]
+        context = self.context
+        team_id = context["team_id"]
+        validated_data["team_id"] = team_id  # still needed outside for model logic
 
-        if source_type in ["amplitude", "mixpanel"]:
-            batch_import = BatchImport(
-                team_id=self.context["team_id"],
-                created_by_id=self.context["request"].user.id,
-            )
-
-            batch_import.config.json_lines(ContentType(validated_data["content_type"])).from_date_range(
-                start_date=validated_data["start_date"].isoformat(),
-                end_date=validated_data["end_date"].isoformat(),
-                access_key=validated_data["access_key"],
-                secret_key=validated_data["secret_key"],
-                export_source=DateRangeExportSource(source_type),
-                is_eu_region=validated_data.get("is_eu_region", False),
-            ).to_kafka(
-                topic=BatchImportKafkaTopic.HISTORICAL,
-                send_rate=1000,
-                transaction_timeout_seconds=60,
-            )
-
-            batch_import.save()
-            return batch_import
-        else:
+        source_type = validated_data.get("source_type")
+        # Use a set for O(1) in checks
+        if source_type not in {"amplitude", "mixpanel"}:
             raise serializers.ValidationError("Invalid source type")
+
+        # Cache field lookups
+        request = context["request"]
+        created_by_id = request.user.id
+        content_type = validated_data["content_type"]
+        start_date = validated_data["start_date"]
+        end_date = validated_data["end_date"]
+        access_key = validated_data["access_key"]
+        secret_key = validated_data["secret_key"]
+        is_eu_region = validated_data.get("is_eu_region", False)
+
+        # Prepare objects only once
+        ct = ContentType(content_type)
+        export_source = DateRangeExportSource(source_type)
+
+        # Assign to variables to avoid excessive chaining
+        batch_import = BatchImport(
+            team_id=team_id,
+            created_by_id=created_by_id,
+        )
+        json_lines = batch_import.config.json_lines(ct)
+        from_date_range = json_lines.from_date_range(
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            access_key=access_key,
+            secret_key=secret_key,
+            export_source=export_source,
+            is_eu_region=is_eu_region,
+        )
+        from_date_range.to_kafka(
+            topic=BatchImportKafkaTopic.HISTORICAL,
+            send_rate=1000,
+            transaction_timeout_seconds=60,
+        )
+
+        batch_import.save()
+        return batch_import
 
 
 class BatchImportResponseSerializer(serializers.ModelSerializer):
