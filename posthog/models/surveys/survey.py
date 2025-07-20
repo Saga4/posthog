@@ -1,5 +1,4 @@
 import json
-import uuid
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -14,6 +13,7 @@ from posthog.models.file_system.file_system_representation import FileSystemRepr
 from dateutil.rrule import rrule, DAILY
 from django.db.models.signals import pre_save
 from django.dispatch import receiver
+import secrets
 
 # we have seen users accidentally set a huge value for iteration count
 # and cause performance issues, so we are extra careful with this value
@@ -310,12 +310,18 @@ def ensure_question_ids(instance):
     Ensures that each question in the survey has a unique ID.
     If a question doesn't have an ID, a new UUID is generated and assigned.
     """
-    if not instance.questions:
+    questions = instance.questions
+    if not questions:
         return
 
-    for question in instance.questions:
-        if not question.get("id"):
-            question["id"] = str(uuid.uuid4())
+    missing_id_indices = [i for i, q in enumerate(questions) if not q.get("id")]
+    n_missing = len(missing_id_indices)
+    if n_missing == 0:
+        return
+
+    uuids = [secrets.token_hex(16) for _ in range(n_missing)]
+    for idx, u in zip(missing_id_indices, uuids):
+        questions[idx]["id"] = u
 
 
 def update_survey_iterations(sender, instance, *args, **kwargs):
