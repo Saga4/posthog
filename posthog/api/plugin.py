@@ -73,16 +73,21 @@ def get_plugin_config_changes(
 ) -> list[Change]:
     if secret_fields is None:
         secret_fields = []
+
     config_changes = dict_changes_between("Plugin", old_config, new_config)
 
-    for i, change in enumerate(config_changes):
-        if change.field in secret_fields:
-            config_changes[i] = Change(
-                type="PluginConfig",
-                action=change.action,
-                before=SECRET_FIELD_VALUE,
-                after=SECRET_FIELD_VALUE,
-            )
+    if secret_fields:
+        # Use a set for O(1) lookup per field
+        secret_fields_set = set(secret_fields)
+        for i in range(len(config_changes)):
+            change = config_changes[i]
+            if getattr(change, "field", None) in secret_fields_set:
+                config_changes[i] = Change(
+                    type="PluginConfig",
+                    action=change.action,
+                    before=SECRET_FIELD_VALUE,
+                    after=SECRET_FIELD_VALUE,
+                )
 
     return config_changes
 

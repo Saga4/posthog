@@ -394,35 +394,32 @@ def dict_changes_between(
     previous = previous or {}
     new = new or {}
 
-    fields = set(list(previous.keys()) + list(new.keys()))
+    prev_keys = previous.keys()
+    new_keys = new.keys()
+    all_fields = set(prev_keys)
+    all_fields.update(new_keys)
+
     if use_field_exclusions:
-        fields = fields - set(field_exclusions.get(model_type, [])) - set(common_field_exclusions)
+        # Construct exclusion set once per call (not per iteration)
+        exclusions = set(field_exclusions.get(model_type, ())) | set(common_field_exclusions)
+        fields = all_fields - exclusions
+    else:
+        fields = all_fields
+
+    append = changes.append
+    prev_get = previous.get
+    new_get = new.get
 
     for field in fields:
-        previous_value = previous.get(field, None)
-        new_value = new.get(field, None)
+        prev_val = prev_get(field, None)
+        new_val = new_get(field, None)
 
-        if previous_value is None and new_value is not None:
-            changes.append(Change(type=model_type, field=field, action="created", after=new_value))
-        elif new_value is None and previous_value is not None:
-            changes.append(
-                Change(
-                    type=model_type,
-                    field=field,
-                    action="deleted",
-                    before=previous_value,
-                )
-            )
-        elif previous_value != new_value:
-            changes.append(
-                Change(
-                    type=model_type,
-                    field=field,
-                    action="changed",
-                    before=previous_value,
-                    after=new_value,
-                )
-            )
+        if prev_val is None and new_val is not None:
+            append(Change(type=model_type, field=field, action="created", after=new_val))
+        elif new_val is None and prev_val is not None:
+            append(Change(type=model_type, field=field, action="deleted", before=prev_val))
+        elif prev_val != new_val:
+            append(Change(type=model_type, field=field, action="changed", before=prev_val, after=new_val))
 
     return changes
 
